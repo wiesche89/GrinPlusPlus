@@ -210,14 +210,14 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
             const HeadersMessage headersMessage = HeadersMessage::Deserialize(byteBuffer);
             const std::vector<BlockHeaderPtr>& blockHeaders = headersMessage.GetHeaders();
 
-            LOG_DEBUG_F("{} headers received from {}", blockHeaders.size(), pConnection);
+            LOG_TRACE_F("{} headers received from {}", blockHeaders.size(), pConnection);
 
             const EBlockChainStatus status = m_pBlockChain->AddBlockHeaders(blockHeaders);
             if (status == EBlockChainStatus::INVALID) {
                 pConnection->BanPeer(EBanReason::BadBlockHeader);
             }
 
-            LOG_DEBUG_F("Headers message from {} finished processing", pConnection);
+            LOG_TRACE_F("Headers message from {} finished processing", pConnection);
             break;
         }
         case GetBlock:

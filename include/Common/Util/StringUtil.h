@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdio>
 #include <cstdarg>
+#include <cctype>
 #include <vector>
 #include <locale>
 #include <codecvt>

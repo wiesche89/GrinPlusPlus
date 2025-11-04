@@ -119,7 +119,9 @@ void Run(const ConfigPtr& pConfig, const Options& options)
 	}
 	else
 	{
-		pNode = Node::Create(pContext);
+		const uint16_t &nodeAPIPort = pContext->GetConfig().GetRestAPIPort();
+		ServerPtr pServer = Server::Create(EServerType::LOCAL, std::make_optional<uint16_t>(nodeAPIPort));
+		pNode = Node::Create(pContext, pServer);
 		pNodeClient = pNode->GetNodeClient();
 	}
 	IO::Out("RPC Node Client started.");

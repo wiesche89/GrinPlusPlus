@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <ostream>
 
 #pragma warning(disable: 4505)
 
@@ -276,3 +277,21 @@ CBigInteger<NUM_BYTES, ALLOC> CBigInteger<NUM_BYTES, ALLOC>::operator/(const int
 }
 
 #endif
+
+template<size_t NUM_BYTES, class ALLOC>
+inline std::ostream& operator<<(std::ostream& os, const CBigInteger<NUM_BYTES, ALLOC>& v)
+{
+	return os << v.ToHex();
+}
+
+namespace Catch {
+	template<typename T, typename = void> struct StringMaker;
+	template<size_t NUM_BYTES, class ALLOC>
+	struct StringMaker<CBigInteger<NUM_BYTES, ALLOC>, void>
+	{
+		static std::string convert(const CBigInteger<NUM_BYTES, ALLOC>& v)
+		{
+			return v.ToHex();
+		}
+	};
+}

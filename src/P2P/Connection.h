@@ -46,6 +46,7 @@ public:
 		m_pMessageProcessor(pMessageProcessor),
 		m_terminate(false),
 		m_sendingDisabled(false),
+		m_receivingDisabled(false),
 		m_advertisedBlocks(256) { }
 
 	Connection(const Connection&) = delete;

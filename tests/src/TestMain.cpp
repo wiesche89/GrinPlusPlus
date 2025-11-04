@@ -1,4 +1,4 @@
-#define CATCH_CONFIG_MAIN
+#define CATCH_CONFIG_RUNNER
 #include <catch.hpp>
 
 #include <Core/Global.h>
@@ -36,3 +36,9 @@ private:
 };
 
 static TestRuntime RUNTIME;
+
+int main(int argc, char* argv[])
+{
+    TestRuntime runtime;
+    return Catch::Session().run(argc, argv);
+}

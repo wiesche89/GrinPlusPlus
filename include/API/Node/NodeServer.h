@@ -24,8 +24,9 @@ public:
     static NodeServer::UPtr Create(
         const ServerPtr& pServer,
         const IBlockChain::Ptr& pBlockChain,
-        const IP2PServerPtr& pP2PServer
-    );
+        const IP2PServerPtr& pP2PServer,
+        const std::weak_ptr<ITxHashSet>& pTxHashSet,
+        const IDatabasePtr& pDatabase);
 
 private:
     RPCServer::Ptr m_pForeignServer;
