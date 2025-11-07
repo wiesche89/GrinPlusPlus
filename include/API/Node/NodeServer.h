@@ -4,6 +4,7 @@
 #include <BlockChain/BlockChain.h>
 #include <Net/Servers/RPC/RPCServer.h>
 #include <P2P/P2PServer.h>
+#include <TxPool/TransactionPool.h>
 
 class NodeServer
 {
@@ -26,7 +27,8 @@ public:
         const IBlockChain::Ptr& pBlockChain,
         const IP2PServerPtr& pP2PServer,
         const std::weak_ptr<ITxHashSet>& pTxHashSet,
-        const IDatabasePtr& pDatabase);
+        const IDatabasePtr& pDatabase,
+        const ITransactionPool::Ptr& pTransactionPool);
 
 private:
     RPCServer::Ptr m_pForeignServer;

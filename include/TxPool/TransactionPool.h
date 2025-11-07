@@ -15,6 +15,8 @@
 #include <Crypto/Models/Hash.h>
 #include <vector>
 #include <set>
+#include <ctime>
+#include <chrono>
 
 // Forward Declarations
 class IBlockDB;
@@ -28,6 +30,13 @@ enum class EAddTransactionStatus
 	LOW_FEE,
 	TX_INVALID,
 	NOT_ADDED
+};
+
+struct TransactionPoolEntry
+{
+	TransactionPtr pTransaction;
+	std::chrono::system_clock::time_point timestamp;
+	EDandelionStatus status;
 };
 
 class ITransactionPool
@@ -73,6 +82,10 @@ public:
 		ITxHashSetConstPtr pTxHashSet,
 		const FullBlock& block
 	) = 0;
+
+	virtual size_t GetPoolSize() const = 0;
+	virtual size_t GetStemPoolSize() const = 0;
+	virtual std::vector<TransactionPoolEntry> GetTransactions(const EPoolType poolType) const = 0;
 
 	// Dandelion
 	virtual TransactionPtr GetTransactionToStem(

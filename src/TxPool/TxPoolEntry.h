@@ -2,7 +2,7 @@
 
 #include <Core/Models/Transaction.h>
 #include <TxPool/DandelionStatus.h>
-#include <ctime>
+#include <chrono>
 
 class TxPoolEntry
 {
@@ -10,8 +10,8 @@ public:
 	//
 	// Constructors
 	//
-	TxPoolEntry(TransactionPtr pTransaction, const EDandelionStatus status, const std::time_t timestamp)
-		: m_pTransaction(pTransaction), m_status(status), m_timestamp(timestamp)
+	TxPoolEntry(TransactionPtr pTransaction, const EDandelionStatus status, std::chrono::system_clock::time_point timestamp)
+		: m_pTransaction(pTransaction), m_status(status), m_timestamp(std::move(timestamp))
 	{
 
 	}
@@ -39,7 +39,7 @@ public:
 	//
 	inline TransactionPtr GetTransaction() const { return m_pTransaction; }
 	inline EDandelionStatus GetStatus() const { return m_status; }
-	inline std::time_t GetTimestamp() const { return m_timestamp; }
+	inline std::chrono::system_clock::time_point GetTimestamp() const { return m_timestamp; }
 
 	//
 	// Setters
@@ -49,5 +49,5 @@ public:
 private:
 	TransactionPtr m_pTransaction;
 	EDandelionStatus m_status;
-	std::time_t m_timestamp;
+	std::chrono::system_clock::time_point m_timestamp;
 };

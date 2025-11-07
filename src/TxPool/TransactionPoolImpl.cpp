@@ -97,6 +97,36 @@ std::vector<TransactionPtr> TransactionPool::FindTransactionsByKernel(const std:
 	return m_memPool.FindTransactionsByKernel(kernels);
 }
 
+size_t TransactionPool::GetPoolSize() const
+{
+	std::shared_lock<std::shared_mutex> readLock(m_mutex);
+	return m_memPool.Size();
+}
+
+size_t TransactionPool::GetStemPoolSize() const
+{
+	std::shared_lock<std::shared_mutex> readLock(m_mutex);
+	return m_stemPool.Size();
+}
+
+std::vector<TransactionPoolEntry> TransactionPool::GetTransactions(const EPoolType poolType) const
+{
+	std::shared_lock<std::shared_mutex> readLock(m_mutex);
+
+	const std::vector<TxPoolEntry> entries = (poolType == EPoolType::STEMPOOL)
+		? m_stemPool.GetEntries()
+		: m_memPool.GetEntries();
+
+	std::vector<TransactionPoolEntry> result;
+	result.reserve(entries.size());
+	for (const TxPoolEntry& entry : entries)
+	{
+		result.push_back(TransactionPoolEntry{ entry.GetTransaction(), entry.GetTimestamp(), entry.GetStatus() });
+	}
+
+	return result;
+}
+
 TransactionPtr TransactionPool::FindTransactionByKernelHash(const Hash& kernelHash) const
 {
 	std::shared_lock<std::shared_mutex> readLock(m_mutex);

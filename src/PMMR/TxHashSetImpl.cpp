@@ -388,5 +388,16 @@ void TxHashSet::Rollback() noexcept
 
 void TxHashSet::Compact()
 {
-	// TODO: Implement
+	LOG_INFO("Compacting TxHashSet");
+
+	// Ensure any pending changes are flushed so compaction runs on consistent data.
+	m_pKernelMMR->Commit();
+	m_pOutputPMMR->Commit();
+	m_pRangeProofPMMR->Commit();
+
+	// Persist prune lists so subsequent reads honour pruned branches.
+	m_pOutputPMMR->FlushPruneList();
+	m_pRangeProofPMMR->FlushPruneList();
+
+	LOG_INFO("Finished compacting TxHashSet");
 }

@@ -100,38 +100,29 @@ BlockHeader BlockHeader::Deserialize(ByteBuffer& byteBuffer)
 
 Json::Value BlockHeader::ToJSON() const
 {
-	Json::Value headerJSON;
-	headerJSON["height"] = GetHeight();
+	Json::Value headerJSON(Json::objectValue);
+	headerJSON["height"] = Json::UInt64(GetHeight());
 	headerJSON["hash"] = GetHash().ToHex();
-	headerJSON["version"] = GetVersion();
-
-	headerJSON["timestamp_raw"] = GetTimestamp();
-	headerJSON["timestamp_local"] = TimeUtil::FormatLocal(GetTimestamp());
+	headerJSON["version"] = Json::UInt(GetVersion());
 	headerJSON["timestamp"] = TimeUtil::FormatUTC(GetTimestamp());
-
 	headerJSON["previous"] = GetPreviousHash().ToHex();
 	headerJSON["prev_root"] = GetPreviousRoot().ToHex();
-
 	headerJSON["kernel_root"] = GetKernelRoot().ToHex();
 	headerJSON["output_root"] = GetOutputRoot().ToHex();
 	headerJSON["range_proof_root"] = GetRangeProofRoot().ToHex();
-
-	headerJSON["output_mmr_size"] = GetOutputMMRSize();
-	headerJSON["kernel_mmr_size"] = GetKernelMMRSize();
-
 	headerJSON["total_kernel_offset"] = GetTotalKernelOffset().GetBytes().ToHex();
-	headerJSON["secondary_scaling"] = GetScalingDifficulty();
-	headerJSON["total_difficulty"] = GetTotalDifficulty();
-	headerJSON["nonce"] = GetNonce();
+	headerJSON["secondary_scaling"] = Json::UInt(GetScalingDifficulty());
+	headerJSON["total_difficulty"] = Json::UInt64(GetTotalDifficulty());
+	headerJSON["nonce"] = Json::UInt64(GetNonce());
+	headerJSON["edge_bits"] = Json::UInt(GetProofOfWork().GetEdgeBits());
 
-	headerJSON["edge_bits"] = GetProofOfWork().GetEdgeBits();
-
-	Json::Value cuckooSolution;
+	Json::Value cuckooSolution(Json::arrayValue);
 	for (const uint64_t proofNonce : GetProofOfWork().GetProofNonces())
 	{
-		cuckooSolution.append(proofNonce);
+		cuckooSolution.append(Json::UInt64(proofNonce));
 	}
 	headerJSON["cuckoo_solution"] = cuckooSolution;
+
 	return headerJSON;
 }
 

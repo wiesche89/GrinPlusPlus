@@ -22,6 +22,10 @@ public:
 	TransactionPtr FindTransactionByKernelHash(const Hash& kernelHash) const final;
 	void ReconcileBlock(std::shared_ptr<const IBlockDB> pBlockDB, ITxHashSetConstPtr pTxHashSet, const FullBlock& block) final;
 
+	size_t GetPoolSize() const final;
+	size_t GetStemPoolSize() const final;
+	std::vector<TransactionPoolEntry> GetTransactions(const EPoolType poolType) const final;
+
 	// Dandelion
 	TransactionPtr GetTransactionToStem(std::shared_ptr<const IBlockDB> pBlockDB, ITxHashSetConstPtr pTxHashSet) final;
 	TransactionPtr GetTransactionToFluff(std::shared_ptr<const IBlockDB> pBlockDB, ITxHashSetConstPtr pTxHashSet) final;
