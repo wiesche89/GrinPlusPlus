@@ -3,6 +3,7 @@
 #include <Common/Secure.h>
 #include <optional>
 #include <vector>
+#include <stdint.h> 
 
 class Mnemonic
 {
