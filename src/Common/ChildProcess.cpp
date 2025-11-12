@@ -19,7 +19,7 @@ ChildProcess::UCPtr ChildProcess::Create(const std::vector<std::string>& args)
     reproc::options options;
     options.stop_actions = stop_actions;
 
-    options.redirect = { reproc::redirect::inherit, reproc::redirect::inherit, reproc::redirect::inherit };
+    options.redir = { reproc::redirect::inherit, reproc::redirect::inherit, reproc::redirect::inherit };
 
     //#ifdef _WIN32
     //        std::vector<std::wstring> arguments;

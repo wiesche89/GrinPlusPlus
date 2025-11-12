@@ -4,7 +4,7 @@ setlocal EnableExtensions
 echo === GrinPlusPlus Release Build (VS2017 /MT) ===
 
 rem ----- Paths -----
-set "GPP_ROOT=C:\ProjekteGit\opensource\GrinPlusPlus"
+set "GPP_ROOT=C:\ProjekteGit\opensource\wiesche89\GrinPlusPlus"
 set "VCPKG_ROOT=C:\ProjekteGit\opensource\vcpkg"
 set "OVERLAY_TRIPLETS=%GPP_ROOT%\vcpkg\custom_triplets"
 set "OVERLAY_PORTS=%GPP_ROOT%\vcpkg\custom_ports"
