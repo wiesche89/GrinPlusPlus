@@ -44,9 +44,9 @@ std::error_code process::start(const arguments &arguments,
   reproc_options reproc_options = {
     options.environment.data(),
     options.working_directory,
-    { static_cast<REPROC_REDIRECT>(options.redirect.in),
-      static_cast<REPROC_REDIRECT>(options.redirect.out),
-      static_cast<REPROC_REDIRECT>(options.redirect.err) },
+    { static_cast<REPROC_REDIRECT>(options.redir.in),
+      static_cast<REPROC_REDIRECT>(options.redir.out),
+      static_cast<REPROC_REDIRECT>(options.redir.err) },
     stop_actions_to_reproc(options.stop_actions)
   };
 
