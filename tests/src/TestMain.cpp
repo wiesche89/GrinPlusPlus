@@ -1,6 +1,7 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch.hpp>
 
+#include <StringMakerBigInteger.h>
 #include <Core/Global.h>
 #include <Core/Context.h>
 
