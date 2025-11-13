@@ -68,27 +68,46 @@ public:
 
     static std::vector<IPAddress> Resolve(const std::string& domainName)
     {
-        asio::io_context context;
-        asio::ip::tcp::resolver resolver(context);
-        asio::ip::tcp::resolver::query query(domainName, "domain");
-        asio::error_code errorCode;
-        asio::ip::tcp::resolver::iterator iter = resolver.resolve(query, errorCode);
-
         std::vector<IPAddress> addresses;
-        if (!errorCode)
+
+        try
         {
-            std::for_each(iter, {}, [&addresses](auto& it)
+            asio::io_context context;
+            asio::ip::tcp::resolver resolver(context);
+
+            asio::error_code ec;
+            auto results = resolver.resolve(domainName, "", ec);
+
+            if (ec)
+            {
+                LOG_ERROR_F("IPAddress::Resolve({}) failed: {} ({})",
+                            domainName, ec.message(), ec.value());
+                return addresses;
+            }
+
+            for (const auto& it : results)
+            {
+                const asio::ip::address addr = it.endpoint().address();
+                if (addr.is_v4())
                 {
-                    try
-                    {
-                        addresses.push_back(IPAddress(it.endpoint().address()));
-                    }
-                    catch (...) { }
-                });
+                    LOG_TRACE_F("IPAddress::Resolve({}) -> {}", domainName, addr.to_string());
+                    addresses.emplace_back(addr);
+                }
+            }
         }
-        
+        catch (const std::exception& e)
+        {
+            LOG_ERROR_F("IPAddress::Resolve({}) threw exception: {}", domainName, e.what());
+        }
+
+        if (addresses.empty())
+        {
+            LOG_WARNING_F("IPAddress::Resolve({}) - no addresses resolved", domainName);
+        }
+
         return addresses;
     }
+
 
     //
     // Destructor

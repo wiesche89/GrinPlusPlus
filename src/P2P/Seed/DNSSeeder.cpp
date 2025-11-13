@@ -32,11 +32,14 @@ std::vector<SocketAddress> DNSSeeder::GetPeersFromDNS()
 		};
 	}
 
-	for (auto seed : dnsSeeds)
+	for (const auto& seed : dnsSeeds)
 	{
 		LOG_TRACE_F("Checking seed: {}", seed);
-		const std::vector<IPAddress> ipAddresses = IPAddress::Resolve(seed);
-		for (const IPAddress ipAddress : ipAddresses)
+
+		auto ips = IPAddress::Resolve(seed);
+		LOG_TRACE_F("Resolved {} to {} IPs", seed, ips.size());
+
+		for (const auto& ipAddress : ips)
 		{
 			LOG_TRACE_F("IP Address: {}", ipAddress);
 			addresses.emplace_back(SocketAddress(ipAddress, Global::GetConfig().GetP2PPort()));
