@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Common/Compat.h>
+#include <Common/Logger.h>
 #include <Core/Traits/Printable.h>
 #include <Core/Traits/Serializable.h>
 #include <Core/Exceptions/DeserializationException.h>
