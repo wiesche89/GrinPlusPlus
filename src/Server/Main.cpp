@@ -120,7 +120,12 @@ void Run(const ConfigPtr& pConfig, const Options& options)
 	else
 	{
 		const uint16_t &nodeAPIPort = pContext->GetConfig().GetRestAPIPort();
-		ServerPtr pServer = Server::Create(EServerType::LOCAL, std::make_optional<uint16_t>(nodeAPIPort));
+		const EServerType serverType = options.public_node_api
+    									? EServerType::PUBLIC      // -> 0.0.0.0
+    									: EServerType::LOCAL;      // -> 127.0.0.1
+
+		ServerPtr pServer = Server::Create(serverType, std::make_optional<uint16_t>(nodeAPIPort));
+
 		pNode = Node::Create(pContext, pServer);
 		pNodeClient = pNode->GetNodeClient();
 	}
