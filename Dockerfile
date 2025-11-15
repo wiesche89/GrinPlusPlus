@@ -64,7 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreadline-dev file \
  && rm -rf /var/lib/apt/lists/*
 
-# CMake (>= 3.21 für vcpkg)
+# CMake (>= 3.21 fuer vcpkg)
 ENV CMAKE_VERSION=3.30.3
 ENV PATH="/usr/local/bin:${PATH}"
 
@@ -79,7 +79,7 @@ RUN set -eux; \
 
 # vcpkg Basis-Setup
 ENV VCPKG_ROOT=/opt/vcpkg
-# -manifests wie vorher, zusätzlich -compilertracking wie in deinem ARM64-File
+# -manifests wie vorher, zusaetzlich -compilertracking wie in deinem ARM64-File
 ENV VCPKG_FEATURE_FLAGS=-manifests,-compilertracking
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 ENV VCPKG_DEFAULT_BINARY_CACHE=/opt/vcpkg_cache
@@ -92,16 +92,11 @@ RUN git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" \
  && git -C "${VCPKG_ROOT}" checkout 2024.09.30 \
  && "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
 
-# GrinPlusPlus holen (mit kleinem Cache-Buster)
-ARG CACHEBUST=1
-ARG GRINPP_REPO=https://github.com/wiesche89/GrinPlusPlus.git
-ARG GRINPP_REF=master
-ARG GRINPP_REV=force-reclone-1
+# GrinPlusPlus Code aus dem Build-Kontext uebernehmen (Repo muss ausgecheckt sein)
 WORKDIR /build/grinpp
-RUN echo "GRINPP_REV=${GRINPP_REV}" >/dev/null \
- && git clone --depth 1 "$GRINPP_REPO" . \
- && git fetch origin "$GRINPP_REF" --depth 1 \
- && git checkout FETCH_HEAD \
+COPY . /build/grinpp
+RUN test -d .git || { echo "[ERROR] GrinPlusPlus muss vor dem Docker-Build via git ausgecheckt werden."; exit 1; } \
+ && git config --global --add safe.directory /build/grinpp \
  && git submodule update --init --recursive
 
 # Wichtige vcpkg-Pfade aus dem Repo
@@ -110,7 +105,7 @@ ENV VCPKG_OVERLAY_PORTS=/build/grinpp/vcpkg/custom_ports
 ENV VCPKG_OVERLAY_TRIPLETS=/build/grinpp/vcpkg/custom_triplets
 ENV VCPKG_PACKAGES_FILE=/build/grinpp/vcpkg/packages.txt
 
-# Abhängigkeiten + Build: verzweigt nach TARGETARCH
+# Abhaengigkeiten + Build: verzweigt nach TARGETARCH
 RUN set -eux; \
   if [ "$TARGETARCH" = "arm64" ]; then \
     echo '>>> [ARM64] Using triplet arm64-unknown-linux-static + packages.txt'; \
@@ -138,7 +133,7 @@ RUN set -eux; \
     echo '>>> [AMD64] Using triplet x64-linux + bisherige Portliste'; \
     export VCPKG_DEFAULT_TRIPLET=x64-linux; \
     TRIP=${VCPKG_DEFAULT_TRIPLET}; \
-    # RocksDB ohne Overlays, wie vorher bei dir – stabil für amd64
+    # RocksDB ohne Overlays, wie vorher bei dir - stabil fuer amd64
     env -u VCPKG_OVERLAY_PORTS -u VCPKG_OVERLAY_TRIPLETS \
       "${VCPKG_ROOT}/vcpkg" install "rocksdb:${TRIP}" --clean-after-build; \
     BASE_INSTALLS=" \
@@ -172,7 +167,7 @@ RUN set -eux; \
       --overlay-ports="${VCPKG_OVERLAY_PORTS}" \
       ${VCPKG_OVERLAY_TRIPLETS:+--overlay-triplets="${VCPKG_OVERLAY_TRIPLETS}"} \
       --clean-after-build; \
-    # CMake-Konfiguration wie vorher für amd64
+    # CMake-Konfiguration wie vorher fuer amd64
     cmake -S /build/grinpp -B /build/grinpp/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
@@ -187,14 +182,14 @@ RUN set -eux; \
 # --- Executable finden & exportieren ---
 RUN set -eux; \
   BIN_PATH="/build/grinpp/bin/Release/GrinNode"; \
-  echo "===== [INFO] Prüfe Binary unter: $BIN_PATH ====="; \
+  echo "===== [INFO] Pruefe Binary unter: $BIN_PATH ====="; \
   if [ -x "$BIN_PATH" ]; then \
-    echo "? [INFO] Gefundenes Binary: $BIN_PATH"; \
+    echo "[INFO] Gefundenes Binary: $BIN_PATH"; \
     install -D -m 0755 "$BIN_PATH" /out/grinpp; \
-    echo "?? [INFO] Kopiert nach: /out/grinpp"; \
-    echo "?? [INFO] Größe:"; ls -lh /out/grinpp; \
+    echo "[INFO] Kopiert nach: /out/grinpp"; \
+    echo "[INFO] Groesse:"; ls -lh /out/grinpp; \
   else \
-    echo "? [ERROR] Binary nicht gefunden!"; \
+    echo "[ERROR] Binary nicht gefunden!"; \
     echo "--- Verzeichnisinhalt von /build/grinpp/bin ---"; \
     find /build/grinpp/bin -type f -perm -u+x -print || true; \
     exit 1; \
@@ -226,7 +221,7 @@ WORKDIR /opt/nodes/grinpp
 COPY --from=builder-grinpp /out/grinpp /opt/nodes/grinpp/grin
 RUN chmod 0755 /opt/nodes/grinpp/grin
 
-# Pfade für Controller
+# Pfade fuer Controller
 ENV GRIN_RUST_BIN="/opt/nodes/grin-rust/grin" \
     GRIN_RUST_DATADIR="/data/grin-rust" \
     GRINPP_BIN="/opt/nodes/grinpp/grin" \
