@@ -1,5 +1,4 @@
 libsodium
-rocksdb
 zlib
 civetweb
 minizip
