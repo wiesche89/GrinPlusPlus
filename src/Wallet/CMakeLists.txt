@@ -26,5 +26,5 @@ target_compile_definitions(${TARGET_NAME} PRIVATE MW_WALLET)
 target_link_libraries(${TARGET_NAME} API Common Crypto Core Keychain WalletDB Tor)
 
 if (UNIX AND NOT APPLE)
-	target_link_libraries(${TARGET_NAME} uuid)
+	target_link_libraries(${TARGET_NAME} UUID::UUID)
 endif()

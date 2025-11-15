@@ -80,6 +80,7 @@ find_package(fmt CONFIG REQUIRED)
 find_package(secp256k1-zkp CONFIG REQUIRED)
 find_package(mio CONFIG REQUIRED)
 find_package(Catch2 CONFIG REQUIRED)
+find_package(UUID REQUIRED)
 
 include(jsoncpp)
 include(scrypt)
