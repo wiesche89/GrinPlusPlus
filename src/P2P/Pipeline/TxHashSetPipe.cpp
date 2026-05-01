@@ -98,14 +98,19 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 
 			const bool received = pConnection->ReceiveSync(buffer, bytesToRead);
 			if (!received || !Global::IsRunning()) {
-				LOG_INFO_F("bytesReceived: {} zipped_size: {}", bytesReceived, zipped_size);
+				LOG_INFO_F("bytesReceived: {} zipped_size: {} user_agent: {}", 
+					bytesReceived, 
+					zipped_size,
+					pConnection->GetPeer()->GetUserAgent());
+					
 				LOG_ERROR("Transmission ended abruptly");
 				fout.close();
 				FileUtil::RemoveFile(txHashSetPath);
 				pipeline.m_processing = false;
 				pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
 				pConnection->BanPeer(EBanReason::BadTxHashSet);
-
+				
+				pConnection->DisableReceives(false);		
 				return;
 			}
 
@@ -128,7 +133,7 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 		EBlockChainStatus processStatus = pipeline.m_pBlockChain->ProcessTransactionHashSet(blockHash, txHashSetPath, *pSyncStatus);
 		if (processStatus == EBlockChainStatus::INVALID)
 		{
-			LOG_ERROR("Invalid TxHashSet received.");
+			LOG_ERROR_F("Invalid TxHashSet received. user_agent: {}",pConnection->GetPeer()->GetUserAgent());
 			pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
 			pConnection->BanPeer(EBanReason::BadTxHashSet);
 		}
@@ -141,13 +146,17 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 	}
 	catch (...)
 	{
-		LOG_ERROR_F("Exception thrown while downloading/processing TxHashSet from {}", *pConnection);
+		LOG_ERROR_F("Exception thrown while downloading/processing TxHashSet from {} user_agent: {}", 
+			*pConnection,
+			pConnection->GetPeer()->GetUserAgent());
+		
 		pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
 		pConnection->BanPeer(EBanReason::BadTxHashSet);
 		FileUtil::RemoveFile(txHashSetPath);
 	}
 
 	pipeline.m_processing = false;
+	pConnection->DisableReceives(false);
 }
 
 void TxHashSetPipe::SendTxHashSet(const std::shared_ptr<Connection>& pConnection, const Hash& block_hash)

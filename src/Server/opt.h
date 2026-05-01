@@ -16,6 +16,7 @@ struct Options
 	bool include_wallet;
 	std::optional<std::pair<std::string, uint16_t>> shared_node;
 	std::optional<fs::path> config_path;
+	bool public_node_api = false;
 };
 
 static ko_longopt_t longopts[] = {
@@ -25,6 +26,7 @@ static ko_longopt_t longopts[] = {
 	{ "no-wallet", ko_no_argument, 304 },
 	{ "shared-node", ko_required_argument, 305 },
 	{ "config-path", ko_required_argument, 306 },
+	{ "public-node-api", ko_no_argument,   307 },
 	{ NULL, 0, 0 }
 };
 
@@ -56,6 +58,10 @@ static Options ParseOptions(int argc, char* argv[])
 		{
 			options.config_path = opt.arg;
 		}
+		else if (c == 307)
+		{
+			options.public_node_api = true;
+		}
 	}
 
 	return options;
@@ -70,4 +76,5 @@ static void PrintHelp()
 	std::cout << "--no-wallet" << "\t" << "Run only a node, not a wallet" << std::endl;
 	std::cout << "--shared-node [host:port]" << "\t" << "Uses the node at the given address and port (grinnode.live:80)" << std::endl;
 	std::cout << "--config-path [path_to_config]" << "\t" << "Uses the config file at the path provided" << std::endl;
+	std::cout << "--public-node-api\tBind node REST to 0.0.0.0 instead of 127.0.0.1\n";
 }

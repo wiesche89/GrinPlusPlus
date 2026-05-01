@@ -107,7 +107,7 @@ void Connection::Thread_Connect(std::shared_ptr<Connection> pConnection)
         );
     }
     catch (const std::exception& e) {
-        LOG_ERROR_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e);
+        LOG_TRACE_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e);
     }
 }
 

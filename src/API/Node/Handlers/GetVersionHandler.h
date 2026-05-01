@@ -4,23 +4,36 @@
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
 #include <GrinVersion.h>
-#include <optional>
 
 class GetVersionHandler : public RPCMethod
 {
 public:
-	GetVersionHandler(const IBlockChain::Ptr& pBlockChain)
+	explicit GetVersionHandler(const IBlockChain::Ptr& pBlockChain)
 		: m_pBlockChain(pBlockChain) { }
-	~GetVersionHandler() = default;
 
 	RPC::Response Handle(const RPC::Request& request) const final
 	{
-		Json::Value versionJson;
-		versionJson["node_version"] = StringUtil::Format("Grin++ {}", GRINPP_VERSION);
-		versionJson["block_header_version"] = m_pBlockChain->GetTipBlockHeader(EChainType::CANDIDATE)->GetVersion();
+		Json::Value json;
+		json["node_version"] = GRINPP_VERSION;
+
+		if (m_pBlockChain == nullptr)
+		{
+			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "BlockChain unavailable");
+		}
+
+		const BlockHeaderPtr pTip = m_pBlockChain->GetTipBlockHeader(EChainType::CONFIRMED);
+		if (pTip == nullptr)
+		{
+			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "Failed to retrieve chain tip");
+		}
+
+		const uint16_t headerVersion = pTip->GetVersion();
+
+		json["block_header_version"] = Json::UInt(headerVersion);
 
 		Json::Value result;
-		result["Ok"] = versionJson;
+		result["Ok"] = json;
+		
 		return request.BuildResult(result);
 	}
 

@@ -159,6 +159,11 @@ public:
 		}
 	}
 
+	void FlushPruneList()
+	{
+		m_pPruneList->Flush();
+	}
+
 private:
 	std::shared_ptr<HashFile> m_pHashFile;
 	std::shared_ptr<LeafSet> m_pLeafSet;

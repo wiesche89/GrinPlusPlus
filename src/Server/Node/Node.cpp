@@ -1,5 +1,5 @@
 #include "Node.h"
-#include "NodeRestServer.h"
+#include "NodeRPCServer.h"
 #include "NodeClients/DefaultNodeClient.h"
 #include "../console.h"
 
@@ -17,10 +17,10 @@
 
 Node::Node(
 	const Context::Ptr& pContext,
-	std::unique_ptr<NodeRestServer>&& pNodeRestServer,
+	std::unique_ptr<NodeRPCServer>&& pNodeRPCServer,
 	std::shared_ptr<DefaultNodeClient> pNodeClient)
 	: m_pContext(pContext),
-	m_pNodeRestServer(std::move(pNodeRestServer)),
+	m_pNodeRPCServer(std::move(pNodeRPCServer)),
 	m_pNodeClient(pNodeClient)
 {
 
@@ -31,17 +31,18 @@ Node::~Node()
 	LOG_INFO("Shutting down node daemon");
 }
 
-std::unique_ptr<Node> Node::Create(const Context::Ptr& pContext)
+std::unique_ptr<Node> Node::Create(const Context::Ptr& pContext, const ServerPtr& pServer)
 {
-	auto pNodeClient = DefaultNodeClient::Create(pContext);
-	auto pNodeRestServer = NodeRestServer::Create(
-		pContext->GetConfig(),
-		pNodeClient->GetNodeContext()
-	);
+    auto pNodeClient = DefaultNodeClient::Create(pContext);
+    auto pNodeRPCServer = NodeRPCServer::Create(
+        pServer,
+        pNodeClient->GetNodeContext()
+    );
+
 
 	return std::make_unique<Node>(
 		pContext,
-		std::move(pNodeRestServer),
+		std::move(pNodeRPCServer),
 		pNodeClient
 	);
 }

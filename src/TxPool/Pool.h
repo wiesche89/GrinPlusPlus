@@ -42,6 +42,10 @@ public:
 	TransactionPtr Aggregate() const;
 	void Clear() { m_transactions.clear(); }
 
+	size_t Size() const noexcept { return m_transactions.size(); }
+
+	std::vector<TxPoolEntry> GetEntries() const { return m_transactions; }
+
 private:
 	bool ShouldEvict(const Transaction& transaction, const FullBlock& block) const;
 

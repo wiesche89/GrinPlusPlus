@@ -52,6 +52,7 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 	{
 		LOG_TRACE("Peer disconnected. Requesting from new peer.");
 		m_pPeer = nullptr;
+		m_retried = false;
 		return true;
 	}
 
@@ -83,29 +84,30 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 
 bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 {
-	LOG_TRACE("Requesting headers.");
+    LOG_TRACE("Requesting headers.");
 
-	std::vector<Hash> locators = BlockLocator(m_pBlockChain).GetLocators(syncStatus);
+    PeerPtr previousPeer = m_pPeer;
 
-	const GetHeadersMessage getHeadersMessage(std::move(locators));
+    std::vector<Hash> locators = BlockLocator(m_pBlockChain).GetLocators(syncStatus);
+    const GetHeadersMessage getHeadersMessage(std::move(locators));
 
-	bool messageSent = false;
-	if (m_pPeer != nullptr)
-	{
-		messageSent = m_pConnectionManager.lock()->SendMessageToPeer(getHeadersMessage, m_pPeer);
-	}
-	
-	if (!messageSent)
-	{
-		m_pPeer = m_pConnectionManager.lock()->SendMessageToMostWorkPeer(getHeadersMessage);
-	}
+    bool messageSent = false;
+    if (m_pPeer != nullptr) {
+        messageSent = m_pConnectionManager.lock()->SendMessageToPeer(getHeadersMessage, m_pPeer);
+    }
 
-	if (m_pPeer != nullptr)
-	{
-		LOG_TRACE("Headers requested.");
-		m_timeout = std::chrono::system_clock::now() + std::chrono::seconds(10);
-		m_lastHeight = syncStatus.GetHeaderHeight();
-	}
+    if (!messageSent) {
+        m_pPeer = m_pConnectionManager.lock()->SendMessageToMostWorkPeer(getHeadersMessage);
+    }
 
-	return m_pPeer != nullptr;
+    if (m_pPeer != nullptr) {
+        if (m_pPeer != previousPeer) {
+            m_retried = false;
+        }
+        LOG_TRACE("Headers requested.");
+        m_timeout = std::chrono::system_clock::now() + std::chrono::seconds(10);
+        m_lastHeight = syncStatus.GetHeaderHeight();
+    }
+
+    return m_pPeer != nullptr;
 }

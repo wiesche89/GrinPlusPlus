@@ -5,6 +5,7 @@
 #include <Common/Logger.h>
 #include <algorithm>
 #include <unordered_map>
+#include <chrono>
 
 std::vector<TransactionPtr> Pool::GetTransactionsByShortId(const Hash& hash, const uint64_t nonce, const std::set<ShortId>& missingShortIds) const
 {
@@ -33,7 +34,8 @@ void Pool::AddTransaction(TransactionPtr pTransaction, const EDandelionStatus st
 {
 	LOG_DEBUG_F("Transaction added: {}", pTransaction->GetHash());
 
-	m_transactions.emplace_back(TxPoolEntry(pTransaction, status, std::time_t()));
+	const auto now = std::chrono::system_clock::now();
+	m_transactions.emplace_back(TxPoolEntry(pTransaction, status, now));
 }
 
 bool Pool::ContainsTransaction(const Transaction& transaction) const
@@ -101,7 +103,7 @@ std::vector<TransactionPtr> Pool::FindTransactionsByStatus(const EDandelionStatu
 
 std::vector<TransactionPtr> Pool::GetExpiredTransactions(const uint16_t embargoSeconds) const
 {
-	const std::time_t cutoff = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now() - std::chrono::seconds(embargoSeconds));
+	const auto cutoff = std::chrono::system_clock::now() - std::chrono::seconds(embargoSeconds);
 
 	std::vector<TransactionPtr> transactions;
 	for (const TxPoolEntry& txPoolEntry : m_transactions)

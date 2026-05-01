@@ -28,7 +28,10 @@ bool TxHashSetProcessor::ProcessTxHashSet(const Hash& blockHash, const fs::path&
 	}
 
 	// 1. Close Existing TxHashSet
-	m_pChainState->Write()->GetTxHashSetManager()->Close();
+	{
+		auto writer = m_pChainState->Write();
+		writer->GetTxHashSetManager()->Close();
+	}
 
 	// 2. Load and Extract TxHashSet Zip
 	ITxHashSetPtr pTxHashSet = TxHashSetManager::LoadFromZip(m_config, path, pHeader);
@@ -47,29 +50,28 @@ bool TxHashSetProcessor::ProcessTxHashSet(const Hash& blockHash, const fs::path&
 	}
 
 	// 4. Add BlockSums to DB
-	auto pChainStateBatch = m_pChainState->BatchWrite();
-
-	pChainStateBatch->GetBlockDB()->AddBlockSums(pHeader->GetHash(), *pBlockSums);
+	auto stateBatch   = m_pChainState->BatchWrite();
+	auto txHashSetMgr = stateBatch->GetTxHashSetManager();
+	stateBatch->GetBlockDB()->AddBlockSums(pHeader->GetHash(), *pBlockSums);
 
 	// 5. Add Output positions to DB
 	LOG_DEBUG("Saving output positions.");
-	pTxHashSet->SaveOutputPositions(pChainStateBatch->GetChainStore()->GetCandidateChain(), pChainStateBatch->GetBlockDB());
+	pTxHashSet->SaveOutputPositions(stateBatch->GetChainStore()->GetCandidateChain(), stateBatch->GetBlockDB());
 
 	// 6. Store TxHashSet
 	LOG_DEBUG("Using TxHashSet.");
-	pChainStateBatch->GetTxHashSetManager()->SetTxHashSet(pTxHashSet);
+	txHashSetMgr->SetTxHashSet(pTxHashSet);
 
 	// 7. Update confirmed chain
 	LOG_DEBUG("Updating confirmed chain.");
-	if (!UpdateConfirmedChain(pChainStateBatch, *pHeader))
+	if (!UpdateConfirmedChain(stateBatch, *pHeader))
 	{
 		LOG_ERROR_F("Failed to update confirmed chain for {}.", path);
-		pChainStateBatch->GetTxHashSetManager()->Close();
+		txHashSetMgr->Close();
 		return false;
 	}
 
-	pChainStateBatch->Commit();
-
+	stateBatch->Commit();
 	return true;
 }
 

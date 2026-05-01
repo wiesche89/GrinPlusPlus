@@ -43,10 +43,14 @@ public:
 
 	Json::Value ToJSON() const
 	{
-		Json::Value json = GetPeer()->ToJSON();
+		Json::Value json;
+		json["addr"] = GetPeer()->GetIPAddress().Format();;
+		json["capabilities"] = GetPeer()->GetCapabilities().ToJSON();
 		json["direction"] = GetDirection() == EDirection::OUTBOUND ? "Outbound" : "Inbound";
-		json["total_difficulty"] = GetTotalDifficulty();
-		json["height"] = GetHeight();
+		json["height"] = Json::UInt64(GetHeight());
+		json["total_difficulty"] = Json::UInt64(GetTotalDifficulty());
+		json["user_agent"] = GetPeer()->GetUserAgent();
+		json["version"] = Json::UInt(GetPeer()->GetVersion());
 		return json;
 	}
 
