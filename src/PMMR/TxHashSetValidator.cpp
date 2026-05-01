@@ -13,12 +13,24 @@
 #include <BlockChain/BlockChain.h>
 #include <thread>
 #include <atomic>
+#include <map>
+
+namespace
+{
+	struct NRDKernelPos
+	{
+		uint64_t height;
+		uint64_t kernelIndex;
+	};
+}
 
 std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
 {
 	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
 	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
 	std::shared_ptr<const RangeProofPMMR> pRangeProofPMMR = txHashSet.GetRangeProofPMMR();
+
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_SETUP);
 
 	// Validate size of each MMR matches blockHeader
 	if (!ValidateSizes(txHashSet, blockHeader))
@@ -60,6 +72,7 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	}
 
 	syncStatus.UpdateProcessingStatus(15);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_KERNEL_HISTORY_VALIDATION);
 
 	// Validate the full kernel history (kernel MMR root for every block header).
 	LOG_DEBUG("Validating kernel history");
@@ -70,6 +83,18 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	}
 
 	syncStatus.UpdateProcessingStatus(25);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_NRD_KERNELS_VALIDATION);
+
+	LOG_DEBUG("Validating NRD kernel history");
+	LoggerAPI::Flush();
+	if (!ValidateNRDKernelHistory(*txHashSet.GetKernelMMR(), blockHeader, syncStatus))
+	{
+		LOG_ERROR("Invalid NRD kernel history");
+		return std::unique_ptr<BlockSums>(nullptr);
+	}
+
+	syncStatus.UpdateProcessingStatus(30);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION);
 
 	// Validate kernel sums
 	LOG_DEBUG("Validating kernel sums");
@@ -78,7 +103,7 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	std::unique_ptr<BlockSums> pBlockSums = nullptr;
 	try
 	{
-		pBlockSums = std::make_unique<BlockSums>(ValidateKernelSums(txHashSet, blockHeader));
+		pBlockSums = std::make_unique<BlockSums>(ValidateKernelSums(txHashSet, blockHeader, syncStatus));
 	}
 	catch (...)
 	{
@@ -87,6 +112,7 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	}
 
 	syncStatus.UpdateProcessingStatus(40);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_RANGE_PROOFS_VALIDATION);
 
 	// Validate the rangeproof associated with each unspent output.
 	LOG_DEBUG("Validating range proofs");
@@ -98,6 +124,7 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	}
 
 	syncStatus.UpdateProcessingStatus(70);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_KERNEL_SIGNATURES_VALIDATION);
 
 	// Validate kernel signatures
 	LOG_DEBUG("Validating kernel signatures");
@@ -112,6 +139,7 @@ std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, co
 	LoggerAPI::Flush();
 
 	syncStatus.UpdateProcessingStatus(100);
+	syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_SAVE);
 
 	return pBlockSums;
 }
@@ -174,6 +202,7 @@ bool TxHashSetValidator::ValidateMMRHashes(std::shared_ptr<const MMR> pMMR) cons
 bool TxHashSetValidator::ValidateKernelHistory(const KernelMMR& kernelMMR, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
 {
 	const uint64_t totalHeight = blockHeader.GetHeight();
+	const uint64_t totalHeaders = totalHeight + 1;
 	for (uint64_t height = 0; height <= totalHeight; height++)
 	{
 		auto pHeader = m_blockChain.GetBlockHeaderByHeight(height, EChainType::CANDIDATE);
@@ -189,37 +218,169 @@ bool TxHashSetValidator::ValidateKernelHistory(const KernelMMR& kernelMMR, const
 			return false;
 		}
 
-		if (height % 1000 == 0)
+		if (height % 1000 == 0 || height == totalHeight)
 		{
-			syncStatus.UpdateProcessingStatus((uint8_t)(15 + ((10.0 * height) / totalHeight)));
+			const uint64_t checkedHeaders = height + 1;
+			const uint8_t processingStatus = (uint8_t)(15 + ((10.0 * checkedHeaders) / totalHeaders));
+			syncStatus.UpdateProcessingStatus(processingStatus);
+			syncStatus.UpdateProcessingProgress(checkedHeaders, totalHeaders);
+
+			if (height % 100000 == 0 || height == totalHeight)
+			{
+				LOG_DEBUG_F("Validated kernel history through header {}/{}", height, totalHeight);
+			}
 		}
 	}
 
+	syncStatus.UpdateProcessingProgress(totalHeaders, totalHeaders);
 	return true;
 }
 
-BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const BlockHeader& blockHeader) const
+bool TxHashSetValidator::ValidateNRDKernelHistory(const KernelMMR& kernelMMR, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
+{
+	std::map<Commitment, NRDKernelPos> nrdKernelPositions;
+	uint64_t previousNumKernels = 0;
+	uint64_t processedKernels = 0;
+	uint64_t nrdKernels = 0;
+	const uint64_t totalKernels = blockHeader.GetNumKernels();
+
+	auto updateProgress = [&syncStatus, totalKernels](const uint64_t processed) {
+		if (totalKernels == 0) {
+			syncStatus.UpdateProcessingStatus(30);
+			syncStatus.UpdateProcessingProgress(0, 0);
+			return;
+		}
+
+		const uint8_t processingStatus = (uint8_t)(25 + ((5.0 * processed) / totalKernels));
+		syncStatus.UpdateProcessingStatus(processingStatus);
+		syncStatus.UpdateProcessingProgress(processed, totalKernels);
+	};
+
+	updateProgress(0);
+
+	for (uint64_t height = 0; height <= blockHeader.GetHeight(); ++height)
+	{
+		auto pHeader = m_blockChain.GetBlockHeaderByHeight(height, EChainType::CANDIDATE);
+		if (pHeader == nullptr)
+		{
+			LOG_ERROR_F("No header found at height ({}) while validating NRD kernels", height);
+			return false;
+		}
+
+		const uint64_t currentNumKernels = pHeader->GetNumKernels();
+		if (currentNumKernels < previousNumKernels || currentNumKernels > totalKernels)
+		{
+			LOG_ERROR_F("Invalid kernel count at height {} while validating NRD kernels: previous={}, current={}, total={}",
+				height, previousNumKernels, currentNumKernels, totalKernels);
+			return false;
+		}
+
+		for (uint64_t kernelIndex = previousNumKernels; kernelIndex < currentNumKernels; ++kernelIndex)
+		{
+			std::unique_ptr<TransactionKernel> pKernel = kernelMMR.GetKernelAt(LeafIndex::At(kernelIndex));
+			if (pKernel == nullptr)
+			{
+				LOG_ERROR_F("No kernel found at index {} while validating NRD kernels", kernelIndex);
+				return false;
+			}
+
+			if (pKernel->GetFeatures() == EKernelFeatures::NO_RECENT_DUPLICATE)
+			{
+				++nrdKernels;
+				const uint64_t relativeHeight = pKernel->GetLockHeight();
+				if (relativeHeight == 0 || relativeHeight > Consensus::WEEK_HEIGHT)
+				{
+					LOG_ERROR_F("Invalid NRD relative height {} for kernel {} at height {}",
+						relativeHeight, pKernel->GetExcessCommitment(), height);
+					return false;
+				}
+
+				const Commitment& excess = pKernel->GetExcessCommitment();
+				const auto iter = nrdKernelPositions.find(excess);
+				if (iter != nrdKernelPositions.cend())
+				{
+					const uint64_t heightDiff = height - iter->second.height;
+					if (heightDiff < relativeHeight)
+					{
+						LOG_ERROR_F("NRD duplicate kernel {} at height {} violates relative height {}. Previous height={}, kernel_index={}",
+							excess, height, relativeHeight, iter->second.height, iter->second.kernelIndex);
+						return false;
+					}
+				}
+
+				nrdKernelPositions[excess] = NRDKernelPos{ height, kernelIndex };
+			}
+
+			++processedKernels;
+			if (processedKernels % 100000 == 0 || processedKernels == totalKernels)
+			{
+				updateProgress(processedKernels);
+				LOG_DEBUG_F("Validated NRD kernel history through kernel {}/{} (nrd={})",
+					processedKernels, totalKernels, nrdKernels);
+			}
+		}
+
+		previousNumKernels = currentNumKernels;
+	}
+
+	updateProgress(totalKernels);
+	LOG_DEBUG_F("Validated NRD kernel history for {} kernels (nrd={})", totalKernels, nrdKernels);
+	return true;
+}
+
+BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
 {
 	const int64_t overage = 0 - (Consensus::REWARD * (1 + blockHeader.GetHeight()));
+	const uint64_t numOutputs = blockHeader.GetNumOutputs();
+	const uint64_t numKernels = blockHeader.GetNumKernels();
+	const uint64_t totalItems = numOutputs + numKernels;
+	uint64_t processedItems = 0;
+
+	auto updateProgress = [&syncStatus, totalItems](const uint64_t processed) {
+		if (totalItems == 0) {
+			syncStatus.UpdateProcessingStatus(40);
+			syncStatus.UpdateProcessingProgress(0, 0);
+			return;
+		}
+
+		const uint8_t processingStatus = (uint8_t)(30 + ((10.0 * processed) / totalItems));
+		syncStatus.UpdateProcessingStatus(processingStatus);
+		syncStatus.UpdateProcessingProgress(processed, totalItems);
+	};
+
+	updateProgress(0);
 
 	std::vector<Commitment> outputCommitments;
 	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
-	for (LeafIndex output_idx = LeafIndex::At(0); output_idx < blockHeader.GetNumOutputs(); output_idx++) {
+	for (LeafIndex output_idx = LeafIndex::At(0); output_idx < numOutputs; output_idx++) {
 		std::unique_ptr<OutputIdentifier> pOutput = pOutputPMMR->GetAt(output_idx);
 		if (pOutput != nullptr) {
 			outputCommitments.push_back(pOutput->GetCommitment());
+		}
+
+		++processedItems;
+		if (processedItems % 100000 == 0 || processedItems == totalItems) {
+			updateProgress(processedItems);
+			LOG_DEBUG_F("Collected kernel sum commitments {}/{}", processedItems, totalItems);
 		}
 	}
 
 	std::vector<Commitment> excessCommitments;
 	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
-	for (LeafIndex kernel_idx = LeafIndex::At(0); kernel_idx < blockHeader.GetNumKernels(); kernel_idx++) {
+	for (LeafIndex kernel_idx = LeafIndex::At(0); kernel_idx < numKernels; kernel_idx++) {
 		std::unique_ptr<TransactionKernel> pKernel = pKernelMMR->GetKernelAt(kernel_idx);
 		if (pKernel != nullptr) {
 			excessCommitments.push_back(pKernel->GetExcessCommitment());
 		}
+
+		++processedItems;
+		if (processedItems % 100000 == 0 || processedItems == totalItems) {
+			updateProgress(processedItems);
+			LOG_DEBUG_F("Collected kernel sum commitments {}/{}", processedItems, totalItems);
+		}
 	}
 
+	updateProgress(totalItems);
 	return KernelSumValidator::ValidateKernelSums(
 		std::vector<Commitment>(),
 		outputCommitments,
@@ -259,6 +420,7 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 				rangeProofs.clear();
 
 				syncStatus.UpdateProcessingStatus((uint8_t)(40 + ((30.0 * leaf_idx.GetPosition()) / outputMMRSize)));
+				syncStatus.UpdateProcessingProgress(leaf_idx.GetPosition(), outputMMRSize);
 			}
 		}
 	}
@@ -268,6 +430,7 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 		return false;
 	}
 
+	syncStatus.UpdateProcessingProgress(outputMMRSize, outputMMRSize);
 	return true;
 }
 
@@ -292,8 +455,10 @@ bool TxHashSetValidator::ValidateKernelSignatures(const KernelMMR& kernelMMR, Sy
 			kernels.clear();
 
 			syncStatus.UpdateProcessingStatus((uint8_t)(70 + ((30.0 * leaf_idx.Get()) / num_kernels)));
+			syncStatus.UpdateProcessingProgress(leaf_idx.Get(), num_kernels);
 		}
 	}
 
+	syncStatus.UpdateProcessingProgress(num_kernels, num_kernels);
 	return KernelSignatureValidator::BatchVerify(kernels);
 }

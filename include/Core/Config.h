@@ -45,6 +45,7 @@ public:
 
 	uint16_t GetP2PPort() const noexcept;
 	uint16_t GetListenPort() const noexcept;
+	uint16_t GetNetworkDefaultPort() const noexcept;
 	const std::vector<uint8_t>& GetMagicBytes() const noexcept;
 
 	uint8_t GetMinSyncPeers() const noexcept;

@@ -86,7 +86,11 @@ void Seeder::Thread_Seed(Seeder& seeder)
             auto now = std::chrono::system_clock::now();
             const size_t numOutbound = seeder.m_connectionManager.GetNumOutbound();
 
-            if (numOutbound < minimumConnections && lastDNSTime + std::chrono::minutes(5) < now) {
+            // Refresh DNS more aggressively when we have very few peers
+            const auto dnsInterval = numOutbound == 0
+                ? std::chrono::seconds(30)
+                : std::chrono::minutes(5);
+            if (numOutbound < minimumConnections && lastDNSTime + dnsInterval < now) {
                 lastDNSTime = now;
                 LOG_INFO("Refreshing peers from DNS seeders");
                 std::vector<SocketAddress> peerAddresses = DNSSeeder::GetPeersFromDNS();
@@ -94,7 +98,11 @@ void Seeder::Thread_Seed(Seeder& seeder)
                 seeder.m_peerManager.Write()->AddFreshPeers(peerAddresses);
             }
 
-            if (numOutbound < minimumConnections && lastConnectTime + std::chrono::seconds(5) < now) {
+            // Retry faster when we have no outbound connections at all
+            const auto connectInterval = numOutbound == 0
+                ? std::chrono::seconds(2)
+                : std::chrono::seconds(5);
+            if (numOutbound < minimumConnections && lastConnectTime + connectInterval < now) {
                 lastConnectTime = now;
 
                 const size_t connectionsToAdd = (std::min)((size_t)15, (minimumConnections - numOutbound));
@@ -184,7 +192,7 @@ void Seeder::SeedNewConnection()
         ConnectedPeer connectedPeer(
             pPeer,
             EDirection::OUTBOUND,
-            pPeer->GetPort() > 0 ? pPeer->GetPort() : Global::GetConfig().GetP2PPort()
+            pPeer->GetPort() > 0 ? pPeer->GetPort() : Global::GetConfig().GetNetworkDefaultPort()
         );
         SocketPtr pSocket(new Socket(
             connectedPeer.GetSocketAddress(),

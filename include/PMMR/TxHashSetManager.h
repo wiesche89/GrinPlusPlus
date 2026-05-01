@@ -5,6 +5,7 @@
 #include <Core/Traits/Lockable.h>
 #include <filesystem.h>
 #include <memory>
+#include <optional>
 
 // Forward Declarations
 class IBlockDB;
@@ -19,6 +20,10 @@ public:
 	~TxHashSetManager() = default;
 
 	std::shared_ptr<ITxHashSet> Open(const BlockHeaderPtr& pConfirmedTip);
+	std::shared_ptr<ITxHashSet> OpenEmpty(const BlockHeaderPtr& pArchiveHeader);
+	std::shared_ptr<ITxHashSet> OpenForPIBD(const BlockHeaderPtr& pArchiveHeader);
+	std::optional<Hash> GetPIBDResumeHeaderHash() const;
+	void ClearPIBDResumeState();
 	void Close() { m_pTxHashSet.reset(); }
 
 	std::shared_ptr<ITxHashSet> GetTxHashSet() { return m_pTxHashSet; }

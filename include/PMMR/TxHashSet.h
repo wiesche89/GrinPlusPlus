@@ -9,17 +9,25 @@
 #include <Core/Traits/Batchable.h>
 #include <BlockChain/Chain.h>
 #include <Crypto/Models/Hash.h>
+#include <Core/Models/OutputIdentifier.h>
+#include <Core/Models/TransactionKernel.h>
+#include <Crypto/Models/RangeProof.h>
+#include <PMMR/Common/BitmapSegment.h>
+#include <PMMR/Common/Segment.h>
+#include <PMMR/Common/SegmentId.h>
+#include <PMMR/PIBDParams.h>
+#include <optional>
 
 // Forward Declarations
 class Config;
 class FullBlock;
 class Commitment;
-class OutputIdentifier;
 class IBlockChain;
 class IBlockDB;
 class Transaction;
 class TransactionBody;
 class SyncStatus;
+class BitmapAccumulator;
 
 class ITxHashSet : public Traits::IBatchable
 {
@@ -60,6 +68,11 @@ public:
 		std::shared_ptr<IBlockDB> pBlockDB,
 		const FullBlock& block
 	) = 0;
+
+	virtual bool ValidateNRDKernelRules(
+		std::shared_ptr<const IBlockDB> pBlockDB,
+		const FullBlock& block
+	) const = 0;
 
 	//
 	// Validates that the kernel, output and rangeproof MMR roots match those specified in the given header.
@@ -123,6 +136,45 @@ public:
 	virtual OutputDTO GetOutput(const OutputLocation& location) const = 0;
 
 	virtual BlockHeaderPtr GetFlushedBlockHeader() const noexcept = 0;
+	virtual uint64_t GetOutputMMRSize() const = 0;
+	virtual uint64_t GetRangeProofMMRSize() const = 0;
+	virtual uint64_t GetKernelMMRSize() const = 0;
+
+	virtual std::optional<BitmapSegment> GetOutputBitmapSegment(
+		const SegmentIdentifier& identifier
+	) const = 0;
+
+	virtual std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> GetOutputSegment(
+		const SegmentIdentifier& identifier
+	) const = 0;
+
+	virtual std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> GetRangeProofSegment(
+		const SegmentIdentifier& identifier
+	) const = 0;
+
+	virtual std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> GetKernelSegment(
+		const SegmentIdentifier& identifier
+	) const = 0;
+
+	virtual bool ApplyOutputSegment(
+		const Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>& segment,
+		const uint64_t targetMMRSize
+	) = 0;
+
+	virtual bool ApplyRangeProofSegment(
+		const Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>& segment,
+		const uint64_t targetMMRSize
+	) = 0;
+
+	virtual bool ApplyKernelSegment(
+		const Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>& segment,
+		const uint64_t targetMMRSize
+	) = 0;
+
+	virtual void UpdateLeafSets(
+		const BitmapAccumulator& outputBitmap,
+		const uint64_t numOutputs
+	) = 0;
 
 
 

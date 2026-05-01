@@ -8,7 +8,17 @@ enum class ESyncStatus
 {
 	SYNCING_HEADERS,
 	SYNCING_TXHASHSET,
+	SYNCING_TXHASHSET_PIBD,
 	PROCESSING_TXHASHSET,
+	TXHASHSET_PIBD_LEAFSET_UPDATE,
+	TXHASHSET_SETUP,
+	TXHASHSET_KERNEL_HISTORY_VALIDATION,
+	TXHASHSET_NRD_KERNELS_VALIDATION,
+	TXHASHSET_KERNEL_SUMS_VALIDATION,
+	TXHASHSET_RANGE_PROOFS_VALIDATION,
+	TXHASHSET_KERNEL_SIGNATURES_VALIDATION,
+	TXHASHSET_SAVE,
+	TXHASHSET_DONE,
 	TXHASHSET_SYNC_FAILED,
 	SYNCING_BLOCKS,
 	WAITING_FOR_PEERS,
@@ -30,7 +40,15 @@ public:
 		m_lastBlockTime(0),
 		m_txHashSetDownloaded(0),
 		m_txHashSetTotalSize(0),
-		m_txHashSetProcessingStatus(0)
+		m_txHashSetProcessingStatus(0),
+		m_txHashSetProcessingCurrent(0),
+		m_txHashSetProcessingTotal(0),
+		m_pibdAborted(false),
+		m_pibdErrored(false),
+		m_pibdCompletedLeaves(0),
+		m_pibdLeavesRequired(0),
+		m_pibdCompletedToHeight(0),
+		m_pibdRequiredHeight(0)
 	{
 
 	}
@@ -46,7 +64,15 @@ public:
 		m_lastBlockTime(other.m_lastBlockTime.load()),
 		m_txHashSetDownloaded(other.m_txHashSetDownloaded.load()),
 		m_txHashSetTotalSize(other.m_txHashSetTotalSize.load()),
-		m_txHashSetProcessingStatus(other.m_txHashSetProcessingStatus.load())
+		m_txHashSetProcessingStatus(other.m_txHashSetProcessingStatus.load()),
+		m_txHashSetProcessingCurrent(other.m_txHashSetProcessingCurrent.load()),
+		m_txHashSetProcessingTotal(other.m_txHashSetProcessingTotal.load()),
+		m_pibdAborted(other.m_pibdAborted.load()),
+		m_pibdErrored(other.m_pibdErrored.load()),
+		m_pibdCompletedLeaves(other.m_pibdCompletedLeaves.load()),
+		m_pibdLeavesRequired(other.m_pibdLeavesRequired.load()),
+		m_pibdCompletedToHeight(other.m_pibdCompletedToHeight.load()),
+		m_pibdRequiredHeight(other.m_pibdRequiredHeight.load())
 	{
 
 	}
@@ -64,8 +90,38 @@ public:
 	uint64_t GetDownloaded() const { return m_txHashSetDownloaded; }
 	uint64_t GetDownloadSize() const { return m_txHashSetTotalSize; }
 	uint8_t GetProcessingStatus() const { return m_txHashSetProcessingStatus; }
+	uint64_t GetProcessingCurrent() const { return m_txHashSetProcessingCurrent; }
+	uint64_t GetProcessingTotal() const { return m_txHashSetProcessingTotal; }
+	bool GetPIBDAborted() const { return m_pibdAborted; }
+	bool GetPIBDErrored() const { return m_pibdErrored; }
+	uint64_t GetPIBDCompletedLeaves() const { return m_pibdCompletedLeaves; }
+	uint64_t GetPIBDLeavesRequired() const { return m_pibdLeavesRequired; }
+	uint64_t GetPIBDCompletedToHeight() const { return m_pibdCompletedToHeight; }
+	uint64_t GetPIBDRequiredHeight() const { return m_pibdRequiredHeight; }
 
-	void UpdateStatus(const ESyncStatus syncStatus) { m_syncStatus = syncStatus; }
+	bool IsTxHashSetSyncStatus() const
+	{
+		const ESyncStatus status = GetStatus();
+		return status == ESyncStatus::SYNCING_TXHASHSET
+			|| status == ESyncStatus::SYNCING_TXHASHSET_PIBD
+			|| status == ESyncStatus::PROCESSING_TXHASHSET
+			|| status == ESyncStatus::TXHASHSET_PIBD_LEAFSET_UPDATE
+			|| status == ESyncStatus::TXHASHSET_SETUP
+			|| status == ESyncStatus::TXHASHSET_KERNEL_HISTORY_VALIDATION
+			|| status == ESyncStatus::TXHASHSET_NRD_KERNELS_VALIDATION
+			|| status == ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION
+			|| status == ESyncStatus::TXHASHSET_RANGE_PROOFS_VALIDATION
+			|| status == ESyncStatus::TXHASHSET_KERNEL_SIGNATURES_VALIDATION
+			|| status == ESyncStatus::TXHASHSET_SAVE
+			|| status == ESyncStatus::TXHASHSET_DONE;
+	}
+
+	void UpdateStatus(const ESyncStatus syncStatus)
+	{
+		m_syncStatus = syncStatus;
+		m_txHashSetProcessingCurrent = 0;
+		m_txHashSetProcessingTotal = 0;
+	}
 
 	void UpdateNetworkStatus(const uint64_t numActiveConnections, const uint64_t networkHeight, const uint64_t networkDifficulty)
 	{
@@ -90,6 +146,31 @@ public:
 	void UpdateDownloaded(const uint64_t downloaded) { m_txHashSetDownloaded = downloaded; }
 	void UpdateDownloadSize(const uint64_t downloadSize) { m_txHashSetTotalSize = downloadSize; }
 	void UpdateProcessingStatus(const uint8_t processingStatus) { m_txHashSetProcessingStatus = processingStatus; }
+	void UpdateProcessingProgress(const uint64_t current, const uint64_t total)
+	{
+		m_txHashSetProcessingCurrent = current;
+		m_txHashSetProcessingTotal = total;
+	}
+	void UpdatePIBDStatus(
+		const bool aborted,
+		const bool errored,
+		const uint64_t completedLeaves,
+		const uint64_t leavesRequired,
+		const uint64_t completedToHeight,
+		const uint64_t requiredHeight)
+	{
+		m_syncStatus = ESyncStatus::SYNCING_TXHASHSET_PIBD;
+		m_txHashSetProcessingCurrent = 0;
+		m_txHashSetProcessingTotal = 0;
+		m_pibdAborted = aborted;
+		m_pibdErrored = errored;
+		m_pibdCompletedLeaves = completedLeaves;
+		m_pibdLeavesRequired = leavesRequired;
+		m_pibdCompletedToHeight = completedToHeight;
+		m_pibdRequiredHeight = requiredHeight;
+		m_txHashSetDownloaded = completedLeaves;
+		m_txHashSetTotalSize = leavesRequired;
+	}
 
 private:
 	std::atomic<ESyncStatus> m_syncStatus;
@@ -104,6 +185,14 @@ private:
 	std::atomic<uint64_t> m_txHashSetDownloaded;
 	std::atomic<uint64_t> m_txHashSetTotalSize;
 	std::atomic<uint8_t> m_txHashSetProcessingStatus;
+	std::atomic<uint64_t> m_txHashSetProcessingCurrent;
+	std::atomic<uint64_t> m_txHashSetProcessingTotal;
+	std::atomic_bool m_pibdAborted;
+	std::atomic_bool m_pibdErrored;
+	std::atomic<uint64_t> m_pibdCompletedLeaves;
+	std::atomic<uint64_t> m_pibdLeavesRequired;
+	std::atomic<uint64_t> m_pibdCompletedToHeight;
+	std::atomic<uint64_t> m_pibdRequiredHeight;
 };
 
 typedef std::shared_ptr<SyncStatus> SyncStatusPtr;

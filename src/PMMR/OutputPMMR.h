@@ -11,7 +11,7 @@
 class OutputPMMR : public PruneableMMR<OUTPUT_SIZE, OutputIdentifier>
 {
 public:
-	static std::shared_ptr<OutputPMMR> Load(const fs::path& txHashSetPath)
+	static std::shared_ptr<OutputPMMR> Load(const fs::path& txHashSetPath, const bool includeGenesis = true)
 	{
 		const auto genesisOutput = OutputIdentifier::FromOutput(Global::GetGenesisBlock().GetOutputs().front());
 
@@ -33,7 +33,7 @@ public:
 		std::shared_ptr<DataFile<OUTPUT_SIZE>> pDataFile = DataFile<OUTPUT_SIZE>::Load(txHashSetPath / "output" / "pmmr_data.bin");
 
 		auto pOutputPMMR =  std::shared_ptr<OutputPMMR>(new OutputPMMR(pHashFile, pLeafSet, pPruneList, pDataFile));
-		if (pHashFile->GetSize() == 0)
+		if (includeGenesis && pHashFile->GetSize() == 0)
 		{
 			pOutputPMMR->Append(OutputIdentifier::FromOutput(Global::GetGenesisBlock().GetOutputs().front()));
 		}

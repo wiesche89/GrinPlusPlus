@@ -41,7 +41,7 @@ KernelMMR::KernelMMR(
 
 }
 
-std::shared_ptr<KernelMMR> KernelMMR::Load(const fs::path& txHashSetPath)
+std::shared_ptr<KernelMMR> KernelMMR::Load(const fs::path& txHashSetPath, const bool includeGenesis)
 {
 	const fs::path kernelDir = txHashSetPath / "kernel";
 	const fs::path hashPath = kernelDir / "pmmr_hash.bin";
@@ -53,7 +53,9 @@ std::shared_ptr<KernelMMR> KernelMMR::Load(const fs::path& txHashSetPath)
 	if (pHashFile->GetSize() == 0) {
 		auto pDataFile = DataFile<KERNEL_SIZE>::Load(rawPath);
 		auto pKernelMMR = std::make_shared<KernelMMR>(pHashFile, pDataFile);
-		pKernelMMR->ApplyKernel(Global::GetGenesisBlock().GetKernels().front());
+		if (includeGenesis) {
+			pKernelMMR->ApplyKernel(Global::GetGenesisBlock().GetKernels().front());
+		}
 		return pKernelMMR;
 	}
 
@@ -214,6 +216,39 @@ void KernelMMR::ApplyKernel(const TransactionKernel& kernel)
 	// Hash must be computed from V1 serialization for protocol compatibility with all nodes
 	std::vector<uint8_t> hashData = kernel.Serialized(EProtocolVersion::V1);
 	MMRHashUtil::AddHashes(m_pHashFile, hashData, nullptr);
+}
+
+bool KernelMMR::ApplySegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment)
+{
+	if (!segment.GetHashPositions().empty()) {
+		LOG_WARNING_F("Kernel PIBD segment {}:{} contains hash-only positions",
+			segment.GetIdentifier().GetHeight(),
+			segment.GetIdentifier().GetIndex());
+		return false;
+	}
+
+	if (segment.GetLeafPositions().size() != segment.GetLeaves().size()) {
+		return false;
+	}
+
+	const uint64_t firstKernel = GetNumKernels();
+	for (size_t i = 0; i < segment.GetLeaves().size(); ++i) {
+		const uint64_t expectedPosition = LeafIndex::At(firstKernel + i).GetPosition();
+		if (segment.GetLeafPositions()[i] != expectedPosition) {
+			LOG_WARNING_F("Kernel PIBD segment {}:{} is not contiguous at position {}. Expected {}.",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex(),
+				segment.GetLeafPositions()[i],
+				expectedPosition);
+			return false;
+		}
+	}
+
+	for (const TransactionKernel& kernel : segment.GetLeaves()) {
+		ApplyKernel(kernel);
+	}
+
+	return true;
 }
 
 void KernelMMR::BuildKernelOffsetsFromRawFile()

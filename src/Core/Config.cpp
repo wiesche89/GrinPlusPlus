@@ -143,6 +143,7 @@ void Config::SetMaxPeers(const int max_peers) noexcept { m_pImpl->m_nodeConfig.G
 
 uint16_t Config::GetP2PPort() const noexcept { return m_pImpl->m_nodeConfig.GetP2P().GetP2PPort(); }
 uint16_t Config::GetListenPort() const noexcept { return m_pImpl->m_nodeConfig.GetP2P().GetListenPort(); }
+uint16_t Config::GetNetworkDefaultPort() const noexcept { return m_pImpl->m_nodeConfig.GetP2P().GetNetworkDefaultPort(); }
 const std::vector<uint8_t>& Config::GetMagicBytes() const noexcept { return m_pImpl->m_nodeConfig.GetP2P().GetMagicBytes(); }
 
 uint8_t Config::GetMinSyncPeers() const noexcept { return m_pImpl->m_nodeConfig.GetP2P().GetMinSyncPeers(); }

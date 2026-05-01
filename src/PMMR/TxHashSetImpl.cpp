@@ -1,8 +1,11 @@
 #include "TxHashSetImpl.h"
+#include "TxHashSetSegmenter.h"
 #include "TxHashSetValidator.h"
 #include "Common/MMRUtil.h"
 #include "Common/MMRHashUtil.h"
 
+#include <PMMR/SegmentRequestTracker.h>
+#include <PMMR/TxHashSetDesegmenter.h>
 #include <Common/Util/ThreadUtil.h>
 #include <Common/Util/HexUtil.h>
 #include <Common/Util/FileUtil.h>
@@ -11,6 +14,8 @@
 #include <Database/BlockDb.h>
 #include <Common/Logger.h>
 #include <P2P/SyncStatus.h>
+#include <algorithm>
+#include <map>
 #include <thread>
 
 TxHashSet::TxHashSet(
@@ -162,6 +167,143 @@ bool TxHashSet::ApplyBlock(std::shared_ptr<IBlockDB> pBlockDB, const FullBlock& 
 	return true;
 }
 
+bool TxHashSet::ValidateNRDKernelRules(std::shared_ptr<const IBlockDB> pBlockDB, const FullBlock& block) const
+{
+	std::map<Commitment, uint64_t> blockNRDKernels;
+	uint64_t maxRelativeHeight = 0;
+
+	for (const TransactionKernel& kernel : block.GetKernels())
+	{
+		if (kernel.GetFeatures() != EKernelFeatures::NO_RECENT_DUPLICATE) {
+			continue;
+		}
+
+		const uint64_t relativeHeight = kernel.GetLockHeight();
+		if (relativeHeight == 0 || relativeHeight > Consensus::WEEK_HEIGHT)
+		{
+			LOG_ERROR_F("Invalid NRD relative height {} for kernel {} in block {}",
+				relativeHeight,
+				kernel.GetExcessCommitment(),
+				block);
+			return false;
+		}
+
+		const auto result = blockNRDKernels.emplace(kernel.GetExcessCommitment(), relativeHeight);
+		if (!result.second)
+		{
+			LOG_ERROR_F("Duplicate NRD kernel {} found in block {}",
+				kernel.GetExcessCommitment(),
+				block);
+			return false;
+		}
+
+		maxRelativeHeight = std::max(maxRelativeHeight, relativeHeight);
+	}
+
+	if (blockNRDKernels.empty()) {
+		return true;
+	}
+
+	const uint64_t currentHeight = block.GetHeight();
+	const uint64_t startHeight = currentHeight > maxRelativeHeight ? currentHeight - maxRelativeHeight + 1 : 0;
+
+	uint64_t previousNumKernels = 0;
+	std::vector<BlockHeaderPtr> headers;
+	if (currentHeight > 0)
+	{
+		const uint64_t firstHeaderHeight = startHeight > 0 ? startHeight - 1 : startHeight;
+		uint64_t expectedHeight = currentHeight - 1;
+		Hash headerHash = block.GetPreviousHash();
+
+		while (true)
+		{
+			auto pHeader = pBlockDB->GetBlockHeader(headerHash);
+			if (pHeader == nullptr)
+			{
+				LOG_ERROR_F("Missing block header {} while validating NRD kernels for block {}",
+					headerHash,
+					block);
+				return false;
+			}
+
+			if (pHeader->GetHeight() != expectedHeight)
+			{
+				LOG_ERROR_F("Unexpected header height {} while validating NRD kernels for block {}. Expected {}",
+					pHeader->GetHeight(),
+					block,
+					expectedHeight);
+				return false;
+			}
+
+			headers.push_back(pHeader);
+
+			if (expectedHeight == firstHeaderHeight) {
+				break;
+			}
+
+			headerHash = pHeader->GetPreviousHash();
+			--expectedHeight;
+		}
+
+		std::reverse(headers.begin(), headers.end());
+	}
+
+	size_t headerIndex = 0;
+	if (startHeight > 0)
+	{
+		previousNumKernels = headers.front()->GetNumKernels();
+		headerIndex = 1;
+	}
+
+	for (; headerIndex < headers.size(); ++headerIndex)
+	{
+		const BlockHeaderPtr& pHeader = headers[headerIndex];
+		const uint64_t height = pHeader->GetHeight();
+
+		const uint64_t currentNumKernels = pHeader->GetNumKernels();
+		if (currentNumKernels < previousNumKernels)
+		{
+			LOG_ERROR_F("Kernel count decreased from {} to {} at height {} while validating NRD kernels for block {}",
+				previousNumKernels,
+				currentNumKernels,
+				height,
+				block);
+			return false;
+		}
+
+		for (uint64_t kernelIndex = previousNumKernels; kernelIndex < currentNumKernels; ++kernelIndex)
+		{
+			std::unique_ptr<TransactionKernel> pKernel = m_pKernelMMR->GetKernelAt(LeafIndex::At(kernelIndex));
+			if (pKernel == nullptr)
+			{
+				LOG_ERROR_F("Missing kernel {} while validating NRD kernels for block {}",
+					kernelIndex,
+					block);
+				return false;
+			}
+
+			if (pKernel->GetFeatures() != EKernelFeatures::NO_RECENT_DUPLICATE) {
+				continue;
+			}
+
+			const auto iter = blockNRDKernels.find(pKernel->GetExcessCommitment());
+			if (iter != blockNRDKernels.end() && currentHeight - height < iter->second)
+			{
+				LOG_ERROR_F("NRD kernel {} in block {} duplicates kernel at height {} within relative height {}",
+					pKernel->GetExcessCommitment(),
+					block,
+					height,
+					iter->second);
+				return false;
+			}
+		}
+
+		previousNumKernels = currentNumKernels;
+	}
+
+	return true;
+}
+
 bool TxHashSet::ValidateRoots(const BlockHeader& blockHeader) const
 {
     {
@@ -278,6 +420,67 @@ std::vector<Hash> TxHashSet::GetLastOutputHashes(const uint64_t numberOfOutputs)
 std::vector<Hash> TxHashSet::GetLastRangeProofHashes(const uint64_t numberOfRangeProofs) const
 {
 	return m_pRangeProofPMMR->GetLastLeafHashes(numberOfRangeProofs);
+}
+
+std::optional<BitmapSegment> TxHashSet::GetOutputBitmapSegment(const SegmentIdentifier& identifier) const
+{
+	return TxHashSetSegmenter(*this).OutputBitmapSegment(identifier);
+}
+
+uint64_t TxHashSet::GetOutputMMRSize() const
+{
+	return m_pOutputPMMR->GetSize();
+}
+
+uint64_t TxHashSet::GetRangeProofMMRSize() const
+{
+	return m_pRangeProofPMMR->GetSize();
+}
+
+uint64_t TxHashSet::GetKernelMMRSize() const
+{
+	return m_pKernelMMR->GetSize();
+}
+
+std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> TxHashSet::GetOutputSegment(const SegmentIdentifier& identifier) const
+{
+	return TxHashSetSegmenter(*this).OutputSegment(identifier);
+}
+
+std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> TxHashSet::GetRangeProofSegment(const SegmentIdentifier& identifier) const
+{
+	return TxHashSetSegmenter(*this).RangeProofSegment(identifier);
+}
+
+std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> TxHashSet::GetKernelSegment(const SegmentIdentifier& identifier) const
+{
+	return TxHashSetSegmenter(*this).KernelSegment(identifier);
+}
+
+bool TxHashSet::ApplyOutputSegment(const Segment<OUTPUT_SIZE, OutputIdentifier>& segment, const uint64_t targetMMRSize)
+{
+	return m_pOutputPMMR->ApplySegment(segment, targetMMRSize);
+}
+
+bool TxHashSet::ApplyRangeProofSegment(const Segment<RANGE_PROOF_SIZE, RangeProof>& segment, const uint64_t targetMMRSize)
+{
+	return m_pRangeProofPMMR->ApplySegment(segment, targetMMRSize);
+}
+
+bool TxHashSet::ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment)
+{
+	return m_pKernelMMR->ApplySegment(segment);
+}
+
+bool TxHashSet::ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment, const uint64_t)
+{
+	return ApplyKernelSegment(segment);
+}
+
+void TxHashSet::UpdateLeafSets(const BitmapAccumulator& outputBitmap, const uint64_t numOutputs)
+{
+	m_pOutputPMMR->UpdateLeafSet(outputBitmap, numOutputs);
+	m_pRangeProofPMMR->UpdateLeafSet(outputBitmap, numOutputs);
 }
 
 OutputRange TxHashSet::GetOutputsByLeafIndex(std::shared_ptr<const IBlockDB> pBlockDB, const uint64_t startIndex, const uint64_t maxNumOutputs) const

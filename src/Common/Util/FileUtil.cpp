@@ -5,6 +5,8 @@
 
 #include <fstream>
 #include <cstdlib>
+#include <chrono>
+#include <thread>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -37,20 +39,36 @@ bool FileUtil::ReadFile(const fs::path& filePath, std::vector<uint8_t>& data)
 
 void FileUtil::RenameFile(const fs::path& source, const fs::path& destination)
 {
+	static constexpr size_t MAX_RENAME_ATTEMPTS = 20;
+
 	std::error_code ec;
-	fs::remove(destination, ec);
-	if (ec)
-	{
-		LOG_ERROR_F("Failed to remove {}. Error: {}", destination, ec.message());
-		throw FILE_EXCEPTION_F("Failed to remove {}. Error: {}", destination, ec.message());
+	for (size_t attempt = 1; attempt <= MAX_RENAME_ATTEMPTS; ++attempt) {
+		ec.clear();
+		fs::remove(destination, ec);
+		if (ec) {
+			if (attempt < MAX_RENAME_ATTEMPTS) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+				continue;
+			}
+
+			LOG_ERROR_F("Failed to remove {}. Error: {}", destination, ec.message());
+			throw FILE_EXCEPTION_F("Failed to remove {}. Error: {}", destination, ec.message());
+		}
+
+		ec.clear();
+		fs::rename(source, destination, ec);
+		if (!ec) {
+			return;
+		}
+
+		if (attempt < MAX_RENAME_ATTEMPTS) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			continue;
+		}
 	}
 
-	fs::rename(source, destination, ec);
-	if (ec)
-	{
-		LOG_ERROR_F("Failed to rename {} to {}. Error: {}", source, destination, ec.message());
-		throw FILE_EXCEPTION_F("Failed to rename {} to {}. Error: {}", source, destination, ec.message());
-	}
+	LOG_ERROR_F("Failed to rename {} to {}. Error: {}", source, destination, ec.message());
+	throw FILE_EXCEPTION_F("Failed to rename {} to {}. Error: {}", source, destination, ec.message());
 }
 
 void FileUtil::SafeWriteToFile(const fs::path& filePath, const std::vector<uint8_t>& data)

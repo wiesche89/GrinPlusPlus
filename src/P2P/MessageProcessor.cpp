@@ -100,6 +100,25 @@ void MessageProcessor::ProcessMessage(const std::shared_ptr<Connection>& pConnec
         );
         pConnection->Disconnect();
     }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR_F(
+            "Exception while processing {} from {}: {}",
+            MessageTypes::ToString(messageType),
+            pConnection,
+            e.what()
+        );
+        pConnection->Disconnect();
+    }
+    catch (...)
+    {
+        LOG_ERROR_F(
+            "Unknown exception while processing {} from {}",
+            MessageTypes::ToString(messageType),
+            pConnection
+        );
+        pConnection->Disconnect();
+    }
 }
 
 void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>& pConnection, const RawMessage& rawMessage)
@@ -359,73 +378,69 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         case GetOutputBitmapSegment:
         {
             const GetOutputBitmapSegmentMessage message = GetOutputBitmapSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
+            LOG_DEBUG_F("Sending output bitmap segment {}:{} for {} to {}.",
+                message.GetIdentifier().GetHeight(),
+                message.GetIdentifier().GetIndex(),
+                message.GetBlockHash(),
                 pConnection);
+            m_pPipeline->SendOutputBitmapSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
         case OutputBitmapSegment:
         {
             const OutputBitmapSegmentMessage message = OutputBitmapSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
-                pConnection);
+            m_pPipeline->ReceiveOutputBitmapSegment(pConnection, message);
             break;
         }
         case GetOutputSegment:
         {
             const GetOutputSegmentMessage message = GetOutputSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
+            LOG_DEBUG_F("Sending output segment {}:{} for {} to {}.",
+                message.GetIdentifier().GetHeight(),
+                message.GetIdentifier().GetIndex(),
+                message.GetBlockHash(),
                 pConnection);
+            m_pPipeline->SendOutputSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
         case OutputSegment:
         {
             const OutputSegmentMessage message = OutputSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
-                pConnection);
+            m_pPipeline->ReceiveOutputSegment(pConnection, message);
             break;
         }
         case GetRangeProofSegment:
         {
             const GetRangeProofSegmentMessage message = GetRangeProofSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
+            LOG_DEBUG_F("Sending rangeproof segment {}:{} for {} to {}.",
+                message.GetIdentifier().GetHeight(),
+                message.GetIdentifier().GetIndex(),
+                message.GetBlockHash(),
                 pConnection);
+            m_pPipeline->SendRangeProofSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
         case RangeProofSegment:
         {
             const RangeProofSegmentMessage message = RangeProofSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
-                pConnection);
+            m_pPipeline->ReceiveRangeProofSegment(pConnection, message);
             break;
         }
         case GetKernelSegment:
         {
             const GetKernelSegmentMessage message = GetKernelSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
+            LOG_DEBUG_F("Sending kernel segment {}:{} for {} to {}.",
+                message.GetIdentifier().GetHeight(),
+                message.GetIdentifier().GetIndex(),
+                message.GetBlockHash(),
                 pConnection);
+            m_pPipeline->SendKernelSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
         case KernelSegment:
         {
             const KernelSegmentMessage message = KernelSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG(
-                "Ignoring {} from {} - PIBD handling not yet implemented.",
-                MessageTypes::ToString(header.GetMessageType()),
-                pConnection);
+            m_pPipeline->ReceiveKernelSegment(pConnection, message);
             break;
         }
         default:

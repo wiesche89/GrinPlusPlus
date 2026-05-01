@@ -11,10 +11,13 @@
 #include <Core/File/DataFile.h>
 #include <Roaring.h>
 #include <Core/Exceptions/TxHashSetException.h>
-#include <Core/Serialization/Serializer.h>
 #include <Core/Serialization/ByteBuffer.h>
 #include <Core/Traits/Lockable.h>
 #include <Common/Logger.h>
+#include <PMMR/Common/BitmapAccumulator.h>
+#include <PMMR/Common/Segment.h>
+#include <algorithm>
+#include <optional>
 
 template<size_t DATA_SIZE, class DATA_TYPE>
 class PruneableMMR : public MMR, public Traits::IBatchable
@@ -49,6 +52,83 @@ public:
 
 		// Add hashes
 		MMRHashUtil::AddHashes(m_pHashFile, serialized, m_pPruneList);
+	}
+
+	bool ApplySegment(const Segment<DATA_SIZE, DATA_TYPE>& segment, const uint64_t targetMMRSize)
+	{
+		(void)targetMMRSize;
+
+		if (segment.GetLeafPositions().size() != segment.GetLeaves().size()) {
+			LOG_WARNING_F("Pruneable PIBD segment {}:{} has {} leaf positions but {} leaves.",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex(),
+				segment.GetLeafPositions().size(),
+				segment.GetLeaves().size());
+			return false;
+		}
+
+		if (segment.GetHashPositions().size() != segment.GetHashes().size()) {
+			LOG_WARNING_F("Pruneable PIBD segment {}:{} has {} hash positions but {} hashes.",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex(),
+				segment.GetHashPositions().size(),
+				segment.GetHashes().size());
+			return false;
+		}
+
+		SetDirty(true);
+		std::vector<SegmentNode> orderedNodes;
+		orderedNodes.reserve(segment.GetHashPositions().size() + segment.GetLeafPositions().size());
+		for (size_t i = 0; i < segment.GetHashPositions().size(); ++i) {
+			orderedNodes.emplace_back(SegmentNode::Hash(i, segment.GetHashPositions()[i]));
+		}
+		for (size_t i = 0; i < segment.GetLeafPositions().size(); ++i) {
+			orderedNodes.emplace_back(SegmentNode::Leaf(i, segment.GetLeafPositions()[i]));
+		}
+		std::sort(orderedNodes.begin(), orderedNodes.end());
+
+		for (const SegmentNode& node : orderedNodes) {
+			const uint64_t localSize = GetSize();
+			if (node.position < localSize) {
+				continue;
+			}
+
+			if (node.isHash) {
+				AppendPrunedSubtree(segment.GetHashes()[node.index], node.position);
+			} else if (node.position == localSize) {
+				AppendLeaf(segment.GetLeaves()[node.index]);
+			} else {
+				LOG_WARNING_F("Pruneable PIBD segment {}:{} leaf starts at {}. Expected local PMMR size {}.",
+					segment.GetIdentifier().GetHeight(),
+					segment.GetIdentifier().GetIndex(),
+					node.position,
+					localSize);
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	void UpdateLeafSet(const BitmapAccumulator& bitmapAccumulator, const uint64_t numLeaves)
+	{
+		SetDirty(true);
+
+		const std::vector<BitmapChunk>& chunks = bitmapAccumulator.GetChunks();
+		for (uint64_t leafIdx = 0; leafIdx < numLeaves; ++leafIdx) {
+			const uint64_t chunkIdx = leafIdx / BitmapChunk::LEN_BITS;
+			const bool shouldBeUnspent = chunkIdx < chunks.size()
+				&& chunks[chunkIdx].IsSet(leafIdx % BitmapChunk::LEN_BITS);
+			const LeafIndex leafIndex = LeafIndex::At(leafIdx);
+
+			if (shouldBeUnspent) {
+				m_pLeafSet->Add(leafIndex);
+			} else if (m_pLeafSet->Contains(leafIndex)) {
+				m_pLeafSet->Remove(leafIndex);
+			}
+		}
+
+		m_pLeafSet->Rewind(numLeaves, {});
 	}
 
 	void Remove(const LeafIndex& leaf_idx)
@@ -143,6 +223,7 @@ public:
 			m_pHashFile->Commit();
 			m_pDataFile->Commit();
 			m_pLeafSet->Commit();
+			m_pPruneList->Flush();
 			SetDirty(false);
 		}
 	}
@@ -155,6 +236,7 @@ public:
 			m_pHashFile->Rollback();
 			m_pDataFile->Rollback();
 			m_pLeafSet->Rollback();
+			m_pPruneList->Rollback();
 			SetDirty(false);
 		}
 	}
@@ -165,6 +247,63 @@ public:
 	}
 
 private:
+	struct SegmentNode
+	{
+		size_t index;
+		uint64_t position;
+		bool isHash;
+
+		static SegmentNode Hash(const size_t index, const uint64_t position) noexcept
+		{
+			return SegmentNode{ index, position, true };
+		}
+
+		static SegmentNode Leaf(const size_t index, const uint64_t position) noexcept
+		{
+			return SegmentNode{ index, position, false };
+		}
+
+		bool operator<(const SegmentNode& other) const noexcept
+		{
+			if (position != other.position) {
+				return position < other.position;
+			}
+
+			return isHash && !other.isHash;
+		}
+	};
+
+	void AppendLeaf(const DATA_TYPE& leaf)
+	{
+		const uint64_t position = GetSize();
+		const Index index = Index::At(position);
+		m_pLeafSet->Add(LeafIndex::From(index));
+
+		std::vector<uint8_t> serialized = leaf.Serialized();
+		m_pDataFile->AddData(serialized);
+		MMRHashUtil::AddHashes(m_pHashFile, serialized, m_pPruneList);
+	}
+
+	void AppendPrunedSubtree(const Hash& hash, const uint64_t position)
+	{
+		m_pHashFile->AddData(hash);
+		m_pPruneList->AddPrunedRoot(Index::At(position));
+		m_pPruneList->RebuildCaches();
+
+		uint64_t currentPosition = position;
+		Hash currentHash = hash;
+		for (Index parent = Index::At(currentPosition + 1); !parent.IsLeaf(); parent++) {
+			if (parent.GetRightChild().GetPosition() != currentPosition) {
+				break;
+			}
+
+			const Hash leftHash = MMRHashUtil::GetHashAt(m_pHashFile, parent.GetLeftChild(), m_pPruneList);
+			currentHash = MMRHashUtil::HashParentWithIndex(leftHash, currentHash, parent.GetPosition());
+			m_pHashFile->AddData(currentHash);
+			currentPosition = parent.GetPosition();
+		}
+	}
+
 	std::shared_ptr<HashFile> m_pHashFile;
 	std::shared_ptr<LeafSet> m_pLeafSet;
 	std::shared_ptr<PruneList> m_pPruneList;

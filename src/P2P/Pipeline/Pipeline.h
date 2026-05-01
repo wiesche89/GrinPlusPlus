@@ -8,6 +8,8 @@
 
 #include <P2P/SyncStatus.h>
 #include <BlockChain/BlockChain.h>
+#include <PMMR/TxHashSetManager.h>
+#include <PMMR/Common/SegmentId.h>
 #include <memory>
 
 // Forward Declarations
@@ -20,11 +22,12 @@ public:
 		const Config& config,
 		ConnectionManagerPtr pConnectionManager,
 		const IBlockChain::Ptr& pBlockChain,
+		std::shared_ptr<Locked<TxHashSetManager>> pTxHashSetManager,
 		SyncStatusPtr pSyncStatus)
 	{
 		std::shared_ptr<BlockPipe> pBlockPipe = BlockPipe::Create(config, pBlockChain);
 		std::shared_ptr<TransactionPipe> pTransactionPipe = TransactionPipe::Create(config, pConnectionManager, pBlockChain);
-		std::shared_ptr<TxHashSetPipe> pTxHashSetPipe = TxHashSetPipe::Create(pConnectionManager, pBlockChain, pSyncStatus);
+		std::shared_ptr<TxHashSetPipe> pTxHashSetPipe = TxHashSetPipe::Create(pConnectionManager, pBlockChain, pTxHashSetManager, pSyncStatus);
 
 		return std::shared_ptr<Pipeline>(new Pipeline(pBlockPipe, pTransactionPipe, pTxHashSetPipe));
 	}
@@ -51,6 +54,71 @@ public:
 	void SendTxHashSet(const Connection::Ptr& pConnection, const Hash& block_hash)
 	{
 		m_pTxHashSetPipe->SendTxHashSet(pConnection, block_hash);
+	}
+
+	void SendOutputBitmapSegment(const Connection::Ptr& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+	{
+		m_pTxHashSetPipe->SendOutputBitmapSegment(pConnection, blockHash, identifier);
+	}
+
+	void SendOutputSegment(const Connection::Ptr& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+	{
+		m_pTxHashSetPipe->SendOutputSegment(pConnection, blockHash, identifier);
+	}
+
+	void SendRangeProofSegment(const Connection::Ptr& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+	{
+		m_pTxHashSetPipe->SendRangeProofSegment(pConnection, blockHash, identifier);
+	}
+
+	void SendKernelSegment(const Connection::Ptr& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+	{
+		m_pTxHashSetPipe->SendKernelSegment(pConnection, blockHash, identifier);
+	}
+
+	void ReceiveOutputBitmapSegment(const Connection::Ptr& pConnection, const OutputBitmapSegmentMessage& message)
+	{
+		m_pTxHashSetPipe->ReceiveOutputBitmapSegment(pConnection, message);
+	}
+
+	void ReceiveOutputSegment(const Connection::Ptr& pConnection, const OutputSegmentMessage& message)
+	{
+		m_pTxHashSetPipe->ReceiveOutputSegment(pConnection, message);
+	}
+
+	void ReceiveRangeProofSegment(const Connection::Ptr& pConnection, const RangeProofSegmentMessage& message)
+	{
+		m_pTxHashSetPipe->ReceiveRangeProofSegment(pConnection, message);
+	}
+
+	void ReceiveKernelSegment(const Connection::Ptr& pConnection, const KernelSegmentMessage& message)
+	{
+		m_pTxHashSetPipe->ReceiveKernelSegment(pConnection, message);
+	}
+
+	bool StartPIBD(const BlockHeaderPtr& pArchiveHeader)
+	{
+		return m_pTxHashSetPipe->StartPIBD(pArchiveHeader);
+	}
+
+	bool RequestNextPIBDSegments(const std::shared_ptr<ConnectionManager>& pConnectionManager, const std::vector<PeerConstPtr>& peers)
+	{
+		return m_pTxHashSetPipe->RequestNextPIBDSegments(pConnectionManager, peers);
+	}
+
+	void ClearPIBDRequests()
+	{
+		m_pTxHashSetPipe->ClearPIBDRequests();
+	}
+
+	void AbortPIBD()
+	{
+		m_pTxHashSetPipe->AbortPIBD();
+	}
+
+	bool IsPIBDComplete() const
+	{
+		return m_pTxHashSetPipe->IsPIBDComplete();
 	}
 
 private:

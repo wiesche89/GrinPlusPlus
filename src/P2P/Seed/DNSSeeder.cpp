@@ -16,6 +16,7 @@ std::vector<SocketAddress> DNSSeeder::GetPeersFromDNS()
 	{
 		dnsSeeds = {
 			"mainnet.grinffindor.org",
+			"mainnet.fountainoffairfortune.it",
 			"main.gri.mw",
 			"grincoin.org",
 			"main-seed.grin.money",
@@ -26,6 +27,7 @@ std::vector<SocketAddress> DNSSeeder::GetPeersFromDNS()
 	{
 		dnsSeeds = {
 			"testnet.grinffindor.org",
+			"testnet.fountainoffairfortune.it",
 			"test.gri.mw",
 			"testnet.grincoin.org",
 			"test-seed.grin.money",
@@ -50,7 +52,9 @@ std::vector<SocketAddress> DNSSeeder::GetPeersFromDNS()
 std::vector<SocketAddress> DNSSeeder::ResolveSeed(const std::string& seedEntry)
 {
 	std::string hostname = seedEntry;
-	uint16_t port = Global::GetConfig().GetP2PPort();
+	// Use the network-default peer port (13414 testnet / 3414 mainnet), NOT our own
+	// advertised port, so DNS-seeded peers are always contacted on the correct port.
+	uint16_t port = Global::GetConfig().GetNetworkDefaultPort();
 
 	const size_t colonIndex = seedEntry.rfind(':');
 	if (colonIndex != std::string::npos)

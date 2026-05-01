@@ -18,11 +18,19 @@ public:
 
 		// Can provide block headers and the TxHashSet for some recent-enough height.
 		TXHASHET_HIST = 0x02, // LIGHT_CLIENT: We can prune old range-proofs and drop unnecessary rangeproof hashes if this isn't set
+		TXHASHSET_HIST = TXHASHET_HIST,
 
 		// Can provide a list of healthy peers
 		PEER_LIST = 0x04,
 
+		// Can provide PIBD segments during initial byte download.
+		PIBD_HIST = 0x10,
+
+		// PIBD with the serialization fix used by current grin rust.
+		PIBD_HIST_1 = 0x40,
+
 		FAST_SYNC_NODE = (TXHASHET_HIST | PEER_LIST),
+		PIBD_FAST_SYNC_NODE = (FAST_SYNC_NODE | PIBD_HIST_1),
 
 		ARCHIVE_NODE = (FULL_HIST | TXHASHET_HIST | PEER_LIST)
 	};

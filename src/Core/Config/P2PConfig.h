@@ -23,6 +23,9 @@ public:
 
 	uint16_t GetP2PPort() const noexcept { return m_port; }
 	uint16_t GetListenPort() const noexcept { return m_listenPort; }
+	// The protocol-default port for remote peers (never overridden by config).
+	// Use this when connecting OUT to other nodes or resolving DNS seeds.
+	uint16_t GetNetworkDefaultPort() const noexcept { return m_networkDefaultPort; }
 	const std::vector<uint8_t>& GetMagicBytes() const noexcept { return m_magicBytes; }
 
 	uint8_t GetMinSyncPeers() const noexcept { return m_minSyncPeers; }
@@ -42,6 +45,7 @@ public:
 	P2PConfig(const Environment env, const Json::Value& json)
 	{
 		m_port = 13414;
+		m_networkDefaultPort = 13414;
 		m_magicBytes = { 83, 59 };
 
 		m_maxConnections = 60;
@@ -51,6 +55,7 @@ public:
 
 		if (env == Environment::MAINNET) {
 			m_port = 3414;
+			m_networkDefaultPort = 3414;
 			m_magicBytes = { 97, 61 };
 		}
 		m_listenPort = m_port;
@@ -117,6 +122,7 @@ private:
 	int m_maxConnections;
 	int m_minConnections;
 	uint16_t m_port;
+	uint16_t m_networkDefaultPort;
 	uint16_t m_listenPort;
 	std::vector<uint8_t> m_magicBytes;
 	uint8_t m_minSyncPeers;

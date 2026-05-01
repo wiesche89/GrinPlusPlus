@@ -9,6 +9,7 @@
 #include <Core/Models/FullBlock.h>
 #include <Core/Traits/Lockable.h>
 #include <Crypto/Models/Hash.h>
+#include <PMMR/Common/Segment.h>
 #include <PMMR/Common/LeafIndex.h>
 #include <filesystem.h>
 #include <cstdint>
@@ -30,7 +31,7 @@ public:
 	);
 	virtual ~KernelMMR() = default;
 
-	static std::shared_ptr<KernelMMR> Load(const fs::path & txHashSetPath);
+	static std::shared_ptr<KernelMMR> Load(const fs::path & txHashSetPath, const bool includeGenesis = true);
 
 	std::unique_ptr<TransactionKernel> GetKernelAt(const LeafIndex& leaf_idx) const;
 	bool Rewind(const uint64_t size);
@@ -50,6 +51,7 @@ public:
 	void Rollback() noexcept final;
 
 	void ApplyKernel(const TransactionKernel& kernel);
+	bool ApplySegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment);
 
 private:
 	enum class KernelStorageFormat

@@ -52,7 +52,7 @@ void Syncer::Thread_Sync(Syncer& syncer)
     LOG_DEBUG("BEGIN");
 
     HeaderSyncer headerSyncer(syncer.m_pConnectionManager, syncer.m_pBlockChain);
-    StateSyncer stateSyncer(syncer.m_pConnectionManager, syncer.m_pBlockChain);
+    StateSyncer stateSyncer(syncer.m_pConnectionManager, syncer.m_pBlockChain, syncer.m_pPipeline);
     BlockSyncer blockSyncer(syncer.m_pConnectionManager, syncer.m_pBlockChain, syncer.m_pPipeline);
     bool headers_synced = false;
     bool blocks_synced = false;
@@ -66,7 +66,7 @@ void Syncer::Thread_Sync(Syncer& syncer)
             if (pStatus->GetNumActiveConnections() >= Global::GetConfig().GetMinSyncPeers()) {
                 // Sync Headers
                 if (headerSyncer.SyncHeaders(*pStatus, !headers_synced)) {
-                    if (pStatus->GetStatus() != ESyncStatus::SYNCING_TXHASHSET && pStatus->GetStatus() != ESyncStatus::PROCESSING_TXHASHSET) {
+                    if (!pStatus->IsTxHashSetSyncStatus()) {
                         pStatus->UpdateStatus(ESyncStatus::SYNCING_HEADERS);
                     }
                     continue;
@@ -88,8 +88,14 @@ void Syncer::Thread_Sync(Syncer& syncer)
                 }
 
                 pStatus->UpdateStatus(ESyncStatus::NOT_SYNCING);
-            } else if (pStatus->GetStatus() != ESyncStatus::PROCESSING_TXHASHSET) {
-                pStatus->UpdateStatus(ESyncStatus::WAITING_FOR_PEERS);
+            } else {
+                // Even without enough connections, run SyncState for PIBD so that
+                // stall-detection and no-peer timeouts can fire and reset the sync state.
+                if (pStatus->GetStatus() == ESyncStatus::SYNCING_TXHASHSET_PIBD) {
+                    stateSyncer.SyncState(*pStatus);
+                } else if (!pStatus->IsTxHashSetSyncStatus()) {
+                    pStatus->UpdateStatus(ESyncStatus::WAITING_FOR_PEERS);
+                }
             }
         }
         catch (std::exception& e) {

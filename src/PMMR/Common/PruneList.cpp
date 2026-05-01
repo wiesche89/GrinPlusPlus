@@ -28,6 +28,10 @@ std::shared_ptr<PruneList> PruneList::Load(const fs::path& filePath)
 
 void PruneList::Flush()
 {
+    if (!m_dirty) {
+        return;
+    }
+
     // Run the optimization step on the bitmap.
     m_prunedRoots.runOptimize();
 
@@ -44,12 +48,32 @@ void PruneList::Flush()
         BuildPrunedCache();
         BuildShiftCaches();
     }
+
+    m_dirty = false;
+}
+
+void PruneList::Rollback() noexcept
+{
+    try {
+        std::vector<unsigned char> data;
+        if (FileUtil::ReadFile(m_filePath, data)) {
+            m_prunedRoots = Roaring::readSafe((const char*)data.data(), data.size());
+        } else {
+            m_prunedRoots = Roaring();
+        }
+
+        BuildPrunedCache();
+        BuildShiftCaches();
+        m_dirty = false;
+    } catch (...) {
+    }
 }
 
 // Push the node at the provided position in the prune list.
 // Compacts the list if pruning the additional node means a parent can get pruned as well.
 void PruneList::Add(const Index& position)
 {
+    m_dirty = true;
     Index current_idx = position;
     while (true) {
         uint64_t sibling_pos = current_idx.GetSibling().GetPosition();
@@ -63,6 +87,18 @@ void PruneList::Add(const Index& position)
             break;
         }
     }
+}
+
+void PruneList::AddPrunedRoot(const Index& mmrIndex)
+{
+    m_dirty = true;
+    m_prunedRoots.add(mmrIndex.GetPosition() + 1);
+}
+
+void PruneList::RebuildCaches()
+{
+    BuildPrunedCache();
+    BuildShiftCaches();
 }
 
 bool PruneList::IsPruned(const Index& mmr_index) const
@@ -131,6 +167,7 @@ uint64_t PruneList::GetLeafShift(const Index& mmr_idx) const
 
 void PruneList::BuildPrunedCache()
 {
+    m_prunedCache = Roaring();
     if (m_prunedRoots.isEmpty()) {
         return;
     }
@@ -138,15 +175,13 @@ void PruneList::BuildPrunedCache()
     const uint64_t maximum = m_prunedRoots.maximum();
     m_prunedCache = Roaring(roaring_bitmap_create_with_capacity(maximum));
 
-    for (Index mmr_idx = Index::At(0); mmr_idx < maximum; mmr_idx++) {
-        Index parent_idx = mmr_idx;
-        while (parent_idx < maximum) {
-            if (m_prunedRoots.contains(parent_idx.GetPosition() + 1)) {
-                m_prunedCache.add(mmr_idx.GetPosition() + 1);
-                break;
-            }
-
-            parent_idx = parent_idx.GetParent();
+    for (const uint64_t rootWirePos : m_prunedRoots) {
+        const uint64_t rootPos = rootWirePos - 1;
+        const uint64_t height = Index::At(rootPos).GetHeight();
+        const uint64_t nodeCount = (1ULL << (height + 1)) - 1;
+        const uint64_t firstPos = rootPos + 1 - nodeCount;
+        for (uint64_t pos = firstPos; pos <= rootPos; ++pos) {
+            m_prunedCache.add(pos + 1);
         }
     }
 
@@ -155,29 +190,22 @@ void PruneList::BuildPrunedCache()
 
 void PruneList::BuildShiftCaches()
 {
+    m_shiftCache.clear();
+    m_leafShiftCache.clear();
+
     if (m_prunedRoots.isEmpty()) {
         return;
     }
 
-    m_shiftCache.clear();
-    m_leafShiftCache.clear();
+    uint64_t totalShift = 0;
+    uint64_t totalLeafShift = 0;
+    for (const uint64_t rootWirePos : m_prunedRoots) {
+        const uint64_t height = Index::At(rootWirePos - 1).GetHeight();
 
-    // TODO: Use m_prunedRoots.iterate instead of looping through all values and checking contains.
-    const uint64_t maximum = m_prunedRoots.maximum();
+        totalShift += 2ULL * ((1ULL << height) - 1);
+        m_shiftCache.push_back(totalShift);
 
-    for (Index mmr_idx = Index::At(0); mmr_idx < maximum; mmr_idx++) {
-        if (m_prunedRoots.contains(mmr_idx.GetPosition() + 1)) {
-            const uint64_t height = mmr_idx.GetHeight();
-
-            // Add to shift cache
-            const uint64_t previousShift = GetShift(mmr_idx - 1);
-            const uint64_t currentShift = 2ULL * ((1ULL << height) - 1);
-            m_shiftCache.push_back(previousShift + currentShift);
-
-            // Add to leaf shift cache
-            const uint64_t previousLeafShift = GetLeafShift(mmr_idx - 1);
-            const uint64_t currentLeafShift = (height == 0) ? 0 : 1ULL << height;
-            m_leafShiftCache.push_back(previousLeafShift + currentLeafShift);
-        }
+        totalLeafShift += (height == 0) ? 0 : 1ULL << height;
+        m_leafShiftCache.push_back(totalLeafShift);
     }
 }

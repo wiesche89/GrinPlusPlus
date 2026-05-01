@@ -202,6 +202,66 @@ EBlockChainStatus BlockChain::ProcessTransactionHashSet(const Hash& blockHash, c
 	return EBlockChainStatus::INVALID;
 }
 
+EBlockChainStatus BlockChain::ProcessPIBDTransactionHashSet(const Hash& blockHash, SyncStatus& syncStatus)
+{
+	try
+	{
+		auto pHeader = m_pChainState->Read()->GetBlockHeaderByHash(blockHash);
+		if (pHeader == nullptr) {
+			LOG_ERROR_F("Header not found for PIBD hash {}.", blockHash);
+			return EBlockChainStatus::INVALID;
+		}
+
+		ITxHashSetPtr pTxHashSet;
+		{
+			auto stateWriter = m_pChainState->Write();
+			pTxHashSet = stateWriter->GetTxHashSetManager()->GetTxHashSet();
+		}
+
+		if (pTxHashSet == nullptr) {
+			LOG_ERROR("PIBD TxHashSet is null.");
+			return EBlockChainStatus::INVALID;
+		}
+
+		auto pBlockSums = pTxHashSet->ValidateTxHashSet(*pHeader, *this, syncStatus);
+		if (pBlockSums == nullptr) {
+			LOG_ERROR_F("PIBD validation of {} failed.", blockHash);
+			m_pChainState->Write()->GetTxHashSetManager()->Close();
+			return EBlockChainStatus::INVALID;
+		}
+
+		auto stateBatch = m_pChainState->BatchWrite();
+		auto txHashSetMgr = stateBatch->GetTxHashSetManager();
+
+		stateBatch->GetBlockDB()->AddBlockSums(pHeader->GetHash(), *pBlockSums);
+		pTxHashSet->SaveOutputPositions(stateBatch->GetChainStore()->GetCandidateChain(), stateBatch->GetBlockDB());
+
+		std::shared_ptr<Chain> pCandidateChain = stateBatch->GetChainStore()->GetCandidateChain();
+		std::shared_ptr<Chain> pConfirmedChain = stateBatch->GetChainStore()->GetConfirmedChain();
+		std::shared_ptr<const BlockIndex> pBlockIndex = pCandidateChain->GetByHeight(pHeader->GetHeight());
+		if (pBlockIndex == nullptr || pBlockIndex->GetHash() != pHeader->GetHash()) {
+			LOG_ERROR_F("PIBD header {} not on candidate chain.", *pHeader);
+			txHashSetMgr->Close();
+			return EBlockChainStatus::INVALID;
+		}
+
+		std::shared_ptr<const BlockIndex> pCommonIndex = stateBatch->GetChainStore()->FindCommonIndex(EChainType::CANDIDATE, EChainType::CONFIRMED);
+		pConfirmedChain->Rewind(pCommonIndex->GetHeight());
+		for (uint64_t height = pCommonIndex->GetHeight() + 1; height <= pBlockIndex->GetHeight(); ++height) {
+			pConfirmedChain->AddBlock(pCandidateChain->GetHash(height), height);
+		}
+
+		stateBatch->Commit();
+		return EBlockChainStatus::SUCCESS;
+	}
+	catch (const std::exception& e)
+	{
+		LOG_ERROR_F("Failed to process PIBD TxHashSet: {}", e.what());
+	}
+
+	return EBlockChainStatus::INVALID;
+}
+
 EBlockChainStatus BlockChain::AddTransaction(TransactionPtr pTransaction, const EPoolType poolType)
 {
 	try

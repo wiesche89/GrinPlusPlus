@@ -165,6 +165,26 @@ namespace Consensus
 	// easier to reason about.
 	static constexpr uint32_t STATE_SYNC_THRESHOLD = 2 * DAY_HEIGHT;
 
+	// Number of blocks to reuse a txhashset archive/PIBD segmenter for.
+	static constexpr uint64_t TXHASHSET_ARCHIVE_INTERVAL = 12 * HOUR_HEIGHT;
+	static constexpr uint64_t TESTING_TXHASHSET_ARCHIVE_INTERVAL = 10;
+
+	static uint64_t GetTxHashSetArchiveInterval(const Environment environment)
+	{
+		return environment == Environment::AUTOMATED_TESTING
+			? TESTING_TXHASHSET_ARCHIVE_INTERVAL
+			: TXHASHSET_ARCHIVE_INTERVAL;
+	}
+
+	static uint64_t GetTxHashSetArchiveHeight(const uint64_t headerHeight)
+	{
+		const uint64_t archiveInterval = GetTxHashSetArchiveInterval(Global::GetEnv());
+		const uint64_t txHashSetHeight = headerHeight > STATE_SYNC_THRESHOLD
+			? headerHeight - STATE_SYNC_THRESHOLD
+			: 0;
+		return txHashSetHeight - (txHashSetHeight % archiveInterval);
+	}
+
 	// Time window in blocks to calculate block time median
 	static const uint64_t MEDIAN_TIME_WINDOW = 11;
 

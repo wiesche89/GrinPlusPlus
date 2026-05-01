@@ -1,12 +1,18 @@
 #pragma once
 
 #include <Crypto/Models/Hash.h>
+#include <Crypto/Hasher.h>
+#include <Core/Exceptions/DeserializationException.h>
 #include <Core/Serialization/ByteBuffer.h>
 #include <Core/Serialization/Serializer.h>
 #include <Core/Traits/Serializable.h>
+#include <PMMR/Common/Index.h>
+#include <PMMR/Common/BitmapAccumulator.h>
 #include <PMMR/Common/SegmentId.h>
 #include <PMMR/Common/SegmentProof.h>
+#include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -19,6 +25,77 @@ class Segment : public Traits::ISerializable
     std::vector<uint64_t> m_leaf_pos;
     std::vector<DATA_TYPE> m_leaves;
     SegmentProof m_proof;
+
+    static Hash HashLeafWithIndex(const DATA_TYPE& leaf, const uint64_t mmrIndex)
+    {
+        Serializer leafSerializer;
+        leaf.Serialize(leafSerializer);
+
+        Serializer hashSerializer;
+        hashSerializer.Append<uint64_t>(mmrIndex);
+        hashSerializer.AppendByteVector(leafSerializer.GetBytes());
+        return Hasher::Blake2b(hashSerializer.GetBytes());
+    }
+
+    static Hash HashParentWithIndex(const Hash& leftChild, const Hash& rightChild, const uint64_t parentIndex)
+    {
+        Serializer serializer;
+        serializer.Append<uint64_t>(parentIndex);
+        serializer.AppendBigInteger<32>(leftChild);
+        serializer.AppendBigInteger<32>(rightChild);
+        return Hasher::Blake2b(serializer.GetBytes());
+    }
+
+    std::optional<Hash> GetProvidedHash(const uint64_t position) const
+    {
+        const auto hashIter = std::find(m_hash_pos.begin(), m_hash_pos.end(), position);
+        if (hashIter != m_hash_pos.end()) {
+            return m_hashes[std::distance(m_hash_pos.begin(), hashIter)];
+        }
+
+        const auto leafIter = std::find(m_leaf_pos.begin(), m_leaf_pos.end(), position);
+        if (leafIter != m_leaf_pos.end()) {
+            return HashLeafWithIndex(m_leaves[std::distance(m_leaf_pos.begin(), leafIter)], position);
+        }
+
+        return std::nullopt;
+    }
+
+    static bool BitmapContains(const BitmapAccumulator& bitmap, const uint64_t bitIndex)
+    {
+        const uint64_t chunkIndex = BitmapAccumulator::ChunkIndex(bitIndex);
+        const std::vector<BitmapChunk>& chunks = bitmap.GetChunks();
+        if (chunkIndex >= chunks.size()) {
+            return false;
+        }
+
+        return chunks[chunkIndex].IsSet(bitIndex % BitmapChunk::LEN_BITS);
+    }
+
+    static uint64_t GetFirstLeafIndex(Index index) noexcept
+    {
+        while (!index.IsLeaf()) {
+            index = index.GetLeftChild();
+        }
+
+        return index.GetLeafIndex();
+    }
+
+    static bool IsRequiredByBitmap(const BitmapAccumulator& bitmap, const Index& index, const uint64_t mmrSize)
+    {
+        const uint64_t firstLeaf = GetFirstLeafIndex(index);
+        const uint64_t subtreeLeafCount = 1ULL << index.GetHeight();
+        const uint64_t maxLeafCount = MMRUtil::CountLeaves(mmrSize);
+        const uint64_t lastLeaf = (std::min)(maxLeafCount, firstLeaf + subtreeLeafCount);
+
+        for (uint64_t leafIndex = firstLeaf; leafIndex < lastLeaf; ++leafIndex) {
+            if (BitmapContains(bitmap, leafIndex)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
 public:
     //
@@ -67,6 +144,169 @@ public:
     const std::vector<DATA_TYPE>& GetLeaves() const noexcept { return m_leaves; }
     const SegmentProof& GetProof() const noexcept { return m_proof; }
 
+    std::pair<uint64_t, uint64_t> GetPositionRange(const uint64_t mmrSize) const noexcept
+    {
+        return m_id.GetPositionRange(mmrSize);
+    }
+
+    std::optional<Hash> Root(const uint64_t mmrSize, const BitmapAccumulator* pBitmap = nullptr) const
+    {
+        if (m_hash_pos.size() != m_hashes.size() || m_leaf_pos.size() != m_leaves.size()) {
+            return std::nullopt;
+        }
+
+        const std::pair<uint64_t, uint64_t> posRange = GetPositionRange(mmrSize);
+        if (posRange.first > posRange.second || mmrSize == 0) {
+            return std::nullopt;
+        }
+
+        std::vector<std::pair<uint64_t, Hash>> nodeHashes;
+        nodeHashes.reserve(m_hashes.size() + m_leaves.size());
+
+        const auto getNodeHash = [&nodeHashes](const uint64_t pos) -> std::optional<Hash> {
+            const auto iter = std::find_if(
+                nodeHashes.begin(),
+                nodeHashes.end(),
+                [pos](const std::pair<uint64_t, Hash>& entry) { return entry.first == pos; });
+            if (iter == nodeHashes.end()) {
+                return std::nullopt;
+            }
+
+            return iter->second;
+        };
+
+        for (uint64_t pos = posRange.first; pos <= posRange.second; ++pos) {
+            if (const std::optional<Hash> providedHash = GetProvidedHash(pos)) {
+                nodeHashes.emplace_back(pos, providedHash.value());
+                continue;
+            }
+
+            const Index index = Index::At(pos);
+            if (index.IsLeaf()) {
+                if (pBitmap == nullptr || IsRequiredByBitmap(*pBitmap, index, mmrSize)) {
+                    return std::nullopt;
+                }
+
+                continue;
+            }
+
+            const std::optional<Hash> leftHash = getNodeHash(index.GetLeftChild().GetPosition());
+            const std::optional<Hash> rightHash = getNodeHash(index.GetRightChild().GetPosition());
+            if (!leftHash.has_value() || !rightHash.has_value()) {
+                if (pBitmap != nullptr && !IsRequiredByBitmap(*pBitmap, index, mmrSize)) {
+                    continue;
+                }
+
+                return std::nullopt;
+            }
+
+            nodeHashes.emplace_back(pos, HashParentWithIndex(leftHash.value(), rightHash.value(), pos));
+        }
+
+        const uint64_t segmentSize = m_id.GetSegmentUnprunedSize(mmrSize);
+        if (segmentSize == m_id.GetSegmentCapacity()) {
+            return getNodeHash(posRange.second);
+        }
+
+        std::optional<Hash> root;
+        const std::vector<uint64_t> peaks = MMRUtil::GetPeakIndices(mmrSize);
+        for (auto iter = peaks.crbegin(); iter != peaks.crend(); ++iter) {
+            const uint64_t peakPos = *iter;
+            if (peakPos < posRange.first || peakPos > posRange.second) {
+                continue;
+            }
+
+            const std::optional<Hash> peakHash = getNodeHash(peakPos);
+            if (!peakHash.has_value()) {
+                return std::nullopt;
+            }
+
+            root = root.has_value()
+                ? std::optional<Hash>(HashParentWithIndex(peakHash.value(), root.value(), mmrSize))
+                : peakHash;
+        }
+
+        return root;
+    }
+
+    std::optional<std::pair<Hash, uint64_t>> FirstUnprunedParent(
+        const uint64_t mmrSize,
+        const BitmapAccumulator* pBitmap = nullptr) const
+    {
+        const std::optional<Hash> root = Root(mmrSize, pBitmap);
+        const std::pair<uint64_t, uint64_t> posRange = GetPositionRange(mmrSize);
+        if (root.has_value()) {
+            return std::make_pair(root.value(), posRange.second + 1);
+        }
+
+        if (pBitmap == nullptr) {
+            return std::nullopt;
+        }
+
+        const uint64_t segmentSize = m_id.GetSegmentUnprunedSize(mmrSize);
+        if (segmentSize != m_id.GetSegmentCapacity()) {
+            return std::nullopt;
+        }
+
+        if (IsRequiredByBitmap(*pBitmap, Index::At(posRange.second), mmrSize)) {
+            return std::nullopt;
+        }
+
+        if (const std::optional<Hash> hash = GetProvidedHash(posRange.second)) {
+            return std::make_pair(hash.value(), posRange.second + 1);
+        }
+
+        for (const std::pair<uint64_t, uint64_t>& entry : MMRUtil::FamilyBranch(posRange.second, mmrSize)) {
+            const uint64_t parentPos = entry.first;
+            if (IsRequiredByBitmap(*pBitmap, Index::At(parentPos), mmrSize)) {
+                break;
+            }
+
+            if (const std::optional<Hash> hash = GetProvidedHash(parentPos)) {
+                return std::make_pair(hash.value(), parentPos + 1);
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    bool Validate(const uint64_t mmrSize, const Hash& mmrRoot, const BitmapAccumulator* pBitmap = nullptr) const
+    {
+        const std::optional<std::pair<Hash, uint64_t>> firstUnprunedParent = FirstUnprunedParent(mmrSize, pBitmap);
+        if (!firstUnprunedParent.has_value()) {
+            return false;
+		}
+
+		const std::pair<uint64_t, uint64_t> posRange = GetPositionRange(mmrSize);
+		return m_proof.Validate(mmrSize, posRange.first, posRange.second, firstUnprunedParent->first, firstUnprunedParent->second, mmrRoot);
+	}
+
+    bool ValidateWith(
+        const uint64_t mmrSize,
+        const Hash& mmrRoot,
+        const uint64_t hashLastPos,
+        const Hash& otherRoot,
+        const bool otherIsLeft,
+        const BitmapAccumulator* pBitmap = nullptr) const
+    {
+        const std::optional<std::pair<Hash, uint64_t>> firstUnprunedParent = FirstUnprunedParent(mmrSize, pBitmap);
+        if (!firstUnprunedParent.has_value()) {
+            return false;
+        }
+
+        const std::pair<uint64_t, uint64_t> posRange = GetPositionRange(mmrSize);
+        return m_proof.ValidateWith(
+            mmrSize,
+            posRange.first,
+            posRange.second,
+            firstUnprunedParent->first,
+            firstUnprunedParent->second,
+            hashLastPos,
+            otherRoot,
+            otherIsLeft,
+            mmrRoot);
+    }
+
     //
     // Serialization/Deserialization
     //
@@ -75,14 +315,14 @@ public:
         serializer.Append(m_id);
         serializer.Append<uint64_t>(m_hash_pos.size());
         for (const uint64_t pos : m_hash_pos) {
-            serializer.Append<uint64_t>(pos);
+            serializer.Append<uint64_t>(pos + 1);
         }
         for (const Hash& hash : m_hashes) {
             serializer.AppendBigInteger<32>(hash);
         }
         serializer.Append<uint64_t>(m_leaf_pos.size());
         for (const uint64_t pos : m_leaf_pos) {
-            serializer.Append<uint64_t>(pos);
+            serializer.Append<uint64_t>(pos + 1);
         }
         for (const DATA_TYPE& leaf : m_leaves) {
             leaf.Serialize(serializer);
@@ -95,8 +335,14 @@ public:
         SegmentIdentifier segmentId = SegmentIdentifier::Deserialize(byteBuffer);
         const uint64_t numHashes = byteBuffer.Read<uint64_t>();
         std::vector<uint64_t> hashPos(numHashes);
+        uint64_t lastWirePos = 0;
         for (uint64_t i = 0; i < numHashes; ++i) {
-            hashPos[i] = byteBuffer.Read<uint64_t>();
+            const uint64_t wirePos = byteBuffer.Read<uint64_t>();
+            if (wirePos <= lastWirePos) {
+                throw DESERIALIZATION_EXCEPTION("Segment hash positions are not strictly sorted.");
+            }
+            lastWirePos = wirePos;
+            hashPos[i] = wirePos - 1;
         }
         std::vector<Hash> hashes;
         hashes.reserve(numHashes);
@@ -105,8 +351,14 @@ public:
         }
         const uint64_t numLeaves = byteBuffer.Read<uint64_t>();
         std::vector<uint64_t> leafPos(numLeaves);
+        lastWirePos = 0;
         for (uint64_t i = 0; i < numLeaves; ++i) {
-            leafPos[i] = byteBuffer.Read<uint64_t>();
+            const uint64_t wirePos = byteBuffer.Read<uint64_t>();
+            if (wirePos <= lastWirePos) {
+                throw DESERIALIZATION_EXCEPTION("Segment leaf positions are not strictly sorted.");
+            }
+            lastWirePos = wirePos;
+            leafPos[i] = wirePos - 1;
         }
         std::vector<DATA_TYPE> leaves;
         leaves.reserve(numLeaves);

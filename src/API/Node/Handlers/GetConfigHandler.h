@@ -42,8 +42,6 @@ public:
 		Json::Value result;
 		result["Ok"] = config_json;
 		return request.BuildResult(result);
-
-		return request.BuildResult(config_json);
 	}
 
 	bool ContainsSecrets() const noexcept final { return false; }

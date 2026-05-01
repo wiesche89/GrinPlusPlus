@@ -18,10 +18,17 @@ public:
 	static PruneList::Ptr Load(const fs::path& filePath);
 
 	void Flush();
+	void Rollback() noexcept;
 
 	// Adds the node to the prune list.
 	// Compacts if pruning the node means a parent can get pruned as well.
 	void Add(const Index& mmrIndex);
+
+	// Adds an already-compacted root from an imported PMMR segment.
+	// Unlike Add(), this does not merge sibling roots because the imported
+	// hash file only contains the roots explicitly present in the segment.
+	void AddPrunedRoot(const Index& mmrIndex);
+	void RebuildCaches();
 
 	// Indicates whether the position is pruned.
 	bool IsPruned(const Index& mmrIndex) const;
@@ -47,4 +54,5 @@ private:
 	Roaring m_prunedCache;
 	std::vector<uint64_t> m_shiftCache;
 	std::vector<uint64_t> m_leafShiftCache;
+	bool m_dirty{ false };
 };

@@ -34,9 +34,16 @@ private:
 		SyncStatus& syncStatus
 	) const;
 
+	bool ValidateNRDKernelHistory(
+		const KernelMMR& kernelMMR,
+		const BlockHeader& blockHeader,
+		SyncStatus& syncStatus
+	) const;
+
 	BlockSums ValidateKernelSums(
 		TxHashSet& txHashSet,
-		const BlockHeader& blockHeader
+		const BlockHeader& blockHeader,
+		SyncStatus& syncStatus
 	) const;
 
 	bool ValidateRangeProofs(

@@ -30,3 +30,37 @@ std::vector<uint64_t> MMRUtil::GetPeakIndices(const uint64_t size)
 
 	return peakIndices;
 }
+
+uint64_t MMRUtil::CountLeaves(const uint64_t size)
+{
+	if (size == 0) {
+		return 0;
+	}
+
+	return LeafIndex::AtPos(size).Get();
+}
+
+bool MMRUtil::IsLeftSibling(const uint64_t position)
+{
+	const Index index = Index::At(position);
+	const Index parent = index.GetParent();
+	return parent.GetLeftChild() == index;
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> MMRUtil::FamilyBranch(const uint64_t position, const uint64_t size)
+{
+	std::vector<std::pair<uint64_t, uint64_t>> branch;
+	if (size == 0 || position >= size) {
+		return branch;
+	}
+
+	Index current = Index::At(position);
+	Index parent = current.GetParent();
+	while (parent.GetPosition() < size) {
+		branch.emplace_back(parent.GetPosition(), current.GetSibling().GetPosition());
+		current = parent;
+		parent = current.GetParent();
+	}
+
+	return branch;
+}

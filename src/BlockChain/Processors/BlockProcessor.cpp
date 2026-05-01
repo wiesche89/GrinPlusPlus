@@ -199,6 +199,10 @@ void BlockProcessor::ValidateAndAddBlock(const FullBlock& block, Writer<ChainSta
 		throw BAD_DATA_EXCEPTION_F(EBanReason::BadBlock, "Failed to apply block {} to the TxHashSet.", block);
 	}
 
+	if (!pTxHashSet->ValidateNRDKernelRules(pBlockDB, block)) {
+		throw BAD_DATA_EXCEPTION_F(EBanReason::BadBlock, "Failed to validate NRD kernel rules for block {}.", block);
+	}
+
 	BlockValidator::VerifySelfConsistent(block);
 
 	if (!pTxHashSet->ValidateRoots(*block.GetHeader())) {

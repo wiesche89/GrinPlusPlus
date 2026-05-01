@@ -1,12 +1,39 @@
 #include "StateSyncer.h"
 #include "../Messages/TxHashSetRequestMessage.h"
+#include "../Pipeline/Pipeline.h"
 
 #include <Consensus.h>
 #include <Common/Logger.h>
 #include <Core/Global.h>
+#include <PMMR/PIBDParams.h>
+
+#include <algorithm>
+
+static constexpr std::chrono::minutes PIBD_STALLED_PEER_BACKOFF(10);
 
 bool StateSyncer::SyncState(SyncStatus& syncStatus)
 {
+	if (syncStatus.GetStatus() == ESyncStatus::SYNCING_TXHASHSET_PIBD)
+	{
+		if (RequestPIBDState(syncStatus)) {
+			return true;
+		}
+
+		if (syncStatus.GetPIBDErrored()) {
+			LOG_WARNING(StringUtil::Format("PIBD failed with peer {}, restarting PIBD.", m_pPeer));
+			m_pPipeline->AbortPIBD();
+			m_pPeer = nullptr;
+			return RequestPIBDState(syncStatus);
+		} else if (m_pPeer != nullptr) {
+			return true;
+		}
+
+		const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+		const uint64_t blockHeight = syncStatus.GetBlockHeight();
+		return headerHeight >= Consensus::CUT_THROUGH_HORIZON
+			&& blockHeight < (headerHeight - Consensus::CUT_THROUGH_HORIZON);
+	}
+
 	if (IsStateSyncDue(syncStatus))
 	{
 		syncStatus.UpdateStatus(ESyncStatus::SYNCING_TXHASHSET);
@@ -31,7 +58,15 @@ bool StateSyncer::IsStateSyncDue(const SyncStatus& syncStatus) const
 	const uint64_t blockHeight = syncStatus.GetBlockHeight();
 
 	const ESyncStatus status = syncStatus.GetStatus();
-	if (status == ESyncStatus::PROCESSING_TXHASHSET)
+	if (status == ESyncStatus::PROCESSING_TXHASHSET
+		|| status == ESyncStatus::TXHASHSET_PIBD_LEAFSET_UPDATE
+		|| status == ESyncStatus::TXHASHSET_SETUP
+		|| status == ESyncStatus::TXHASHSET_KERNEL_HISTORY_VALIDATION
+		|| status == ESyncStatus::TXHASHSET_NRD_KERNELS_VALIDATION
+		|| status == ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION
+		|| status == ESyncStatus::TXHASHSET_RANGE_PROOFS_VALIDATION
+		|| status == ESyncStatus::TXHASHSET_KERNEL_SIGNATURES_VALIDATION
+		|| status == ESyncStatus::TXHASHSET_SAVE)
 	{
 		return false;
 	}
@@ -68,17 +103,18 @@ bool StateSyncer::IsStateSyncDue(const SyncStatus& syncStatus) const
 	}
 
 	// If 60 seconds elapsed with no progress, try another peer.
-	if ((m_timeRequested + std::chrono::seconds(60)) < std::chrono::system_clock::now())
+	if ((m_timeRequested + std::chrono::seconds(PIBD::TXHASHSET_ZIP_FALLBACK_TIME_SECS)) < std::chrono::system_clock::now())
 	{
 		const uint64_t downloaded = syncStatus.GetDownloaded();
 		if (downloaded == 0)
 		{
-			LOG_WARNING("60 seconds elapsed and download still not started.");
+			LOG_WARNING(StringUtil::Format("{} seconds elapsed and download still not started.", PIBD::TXHASHSET_ZIP_FALLBACK_TIME_SECS));
 			return true;
 		}
 	}
 
-	if (m_pPeer != nullptr && !m_pConnectionManager.lock()->IsConnected(m_pPeer->GetIPAddress()))
+	const auto pConnectionManager = m_pConnectionManager.lock();
+	if (m_pPeer != nullptr && (pConnectionManager == nullptr || !pConnectionManager->IsConnected(m_pPeer->GetIPAddress())))
 	{
 		LOG_WARNING("Sync peer no longer connected.");
 		return true;
@@ -87,22 +123,260 @@ bool StateSyncer::IsStateSyncDue(const SyncStatus& syncStatus) const
 	return false;
 }
 
-bool StateSyncer::RequestState(const SyncStatus& syncStatus)
+bool StateSyncer::RequestState(SyncStatus& syncStatus)
+{
+	if (RequestPIBDState(syncStatus)) {
+		return true;
+	}
+
+	return RequestZipState(syncStatus);
+}
+
+bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 {
 	if (m_pPeer != nullptr)
 	{
-		LOG_WARNING_F("TxHashSet timeout from peer: {}, trying next peer.", m_pPeer);
+		const auto pConnectionManager = m_pConnectionManager.lock();
+		if (pConnectionManager == nullptr) {
+			return false;
+		}
+
+		if (!pConnectionManager->IsConnected(m_pPeer->GetIPAddress())
+			|| !m_pPeer->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)) {
+			LOG_WARNING(StringUtil::Format("PIBD peer {} is no longer eligible, selecting a new peer.", m_pPeer));
+			m_pPipeline->ClearPIBDRequests();
+			m_pPeer = nullptr;
+		} else {
+			// Detect stall: peer connected but no PIBD progress
+			const uint64_t currentLeaves = syncStatus.GetPIBDCompletedLeaves();
+			if (m_lastPIBDProgressLeaves == std::numeric_limits<uint64_t>::max()
+				|| currentLeaves > m_lastPIBDProgressLeaves) {
+				m_lastPIBDProgressLeaves = currentLeaves;
+				m_lastPIBDProgressTime = std::chrono::steady_clock::now();
+				m_pibdNoPeerSinceSet = false;
+			} else {
+				const auto stallSecs = std::chrono::duration_cast<std::chrono::seconds>(
+					std::chrono::steady_clock::now() - m_lastPIBDProgressTime).count();
+				const int64_t stallThreshold = PIBD::SEGMENT_REQUEST_TIMEOUT_SECS * 5;
+				if (stallSecs >= stallThreshold) {
+					LOG_WARNING(StringUtil::Format(
+						"PIBD stalled with peer {} for {}s (threshold={}s), switching peer.",
+						m_pPeer, stallSecs, stallThreshold));
+					const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+					const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+						? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+						: 0;
+					bool hasAlternativePIBDPeer = false;
+					for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
+						if (cp.GetPeer() != nullptr
+							&& cp.GetPeer() != m_pPeer
+							&& pConnectionManager->IsConnected(cp.GetIPAddress())
+							&& cp.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
+							&& cp.GetHeight() >= minPeerHeight) {
+							hasAlternativePIBDPeer = true;
+							break;
+						}
+					}
+
+					if (hasAlternativePIBDPeer) {
+						m_blockedPIBDPeers[m_pPeer->GetIPAddress().Format()] = std::chrono::steady_clock::now() + PIBD_STALLED_PEER_BACKOFF;
+						m_pPipeline->ClearPIBDRequests();
+						m_pPeer = nullptr;
+					} else {
+						LOG_WARNING(StringUtil::Format("PIBD peer {} stalled, but no alternative PIBD peer is available; continuing retries.", m_pPeer));
+						m_lastPIBDProgressTime = std::chrono::steady_clock::now();
+					}
+				}
+			}
+		}
+
+		if (m_pPeer != nullptr) {
+			// Collect all currently eligible PIBD peers (not just the primary)
+			// so requests can be distributed across multiple peers in parallel.
+			std::vector<PeerConstPtr> activePibdPeers;
+			activePibdPeers.push_back(m_pPeer);
+
+			const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+			const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+				? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+				: 0;
+			for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
+				if (cp.GetPeer() != nullptr
+					&& cp.GetPeer() != m_pPeer
+					&& pConnectionManager->IsConnected(cp.GetIPAddress())
+					&& cp.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
+					&& cp.GetHeight() >= minPeerHeight) {
+					activePibdPeers.push_back(cp.GetPeer());
+				}
+			}
+
+			const size_t eligiblePibdPeerCount = activePibdPeers.size();
+			if (activePibdPeers.size() > PIBD::SEGMENT_REQUEST_COUNT) {
+				activePibdPeers.resize(PIBD::SEGMENT_REQUEST_COUNT);
+			}
+
+			if (eligiblePibdPeerCount > 1
+				&& (eligiblePibdPeerCount != m_lastLoggedPIBDPeerCount
+					|| activePibdPeers.size() != m_lastLoggedPIBDPeerLimit)) {
+				LOG_DEBUG(StringUtil::Format("Using {} eligible PIBD peer(s), capped at {} peer(s) for parallel requests.",
+					eligiblePibdPeerCount,
+					activePibdPeers.size()));
+				m_lastLoggedPIBDPeerCount = eligiblePibdPeerCount;
+				m_lastLoggedPIBDPeerLimit = activePibdPeers.size();
+			}
+
+			if (m_pPipeline->RequestNextPIBDSegments(pConnectionManager, activePibdPeers)) {
+				return true;
+			} else if (syncStatus.GetPIBDErrored()) {
+				return false;
+			}
+			if (m_pPeer != nullptr) {
+				return true;
+			}
+		}
+	}
+
+	if (!Global::IsRunning()) {
+		return false;
+	}
+
+	const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+	const uint64_t requestedHeight = Consensus::GetTxHashSetArchiveHeight(headerHeight);
+	BlockHeaderPtr pHeader = m_pBlockChain->GetBlockHeaderByHeight(requestedHeight, EChainType::CANDIDATE);
+	if (pHeader == nullptr) {
+		return false;
+	}
+
+	const auto pConnectionManager = m_pConnectionManager.lock();
+	if (pConnectionManager == nullptr) {
+		return false;
+	}
+
+	std::vector<ConnectedPeer> connectedPeers = pConnectionManager->GetConnectedPeers();
+	const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+		? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
+		: 0;
+
+	const auto now = std::chrono::steady_clock::now();
+	for (auto iter = m_blockedPIBDPeers.begin(); iter != m_blockedPIBDPeers.end(); ) {
+		if (iter->second <= now) {
+			iter = m_blockedPIBDPeers.erase(iter);
+		} else {
+			++iter;
+		}
+	}
+
+	std::vector<ConnectedPeer*> pibdPeers;
+	for (ConnectedPeer& peer : connectedPeers) {
+		const std::string peerAddress = peer.GetIPAddress().Format();
+		if (peer.GetPeer() != nullptr
+			&& pConnectionManager->IsConnected(peer.GetIPAddress())
+			&& peer.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
+			&& peer.GetHeight() >= minPeerHeight
+			&& m_blockedPIBDPeers.find(peerAddress) == m_blockedPIBDPeers.end()) {
+			pibdPeers.push_back(&peer);
+		}
+	}
+
+	if (pibdPeers.empty()) {
+		// Track how long we have had no eligible PIBD peer
+		if (!m_pibdNoPeerSinceSet) {
+			m_pibdNoPeerSince = std::chrono::steady_clock::now();
+			m_pibdNoPeerSinceSet = true;
+		}
+		const auto noPeerSecs = std::chrono::duration_cast<std::chrono::seconds>(
+			std::chrono::steady_clock::now() - m_pibdNoPeerSince).count();
+		const int64_t noPeerThreshold = 300; // 5 minutes
+
+		if (noPeerSecs >= noPeerThreshold) {
+			LOG_WARNING(StringUtil::Format(
+				"PIBD has had no eligible peer for {}s, aborting PIBD to trigger re-sync.",
+				noPeerSecs));
+			m_pPipeline->AbortPIBD();
+			syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
+			m_pibdNoPeerSinceSet = false;
+			m_lastPIBDProgressLeaves = std::numeric_limits<uint64_t>::max();
+		} else {
+			LOG_DEBUG(StringUtil::Format(
+				"No eligible PIBD_HIST_1 peer found. connected={}, min_height={}, no_peer_for={}s.",
+				connectedPeers.size(), minPeerHeight, noPeerSecs));
+		}
+		return false;
+	}
+
+	// Found at least one eligible peer - reset no-peer timer
+	m_pibdNoPeerSinceSet = false;
+
+	std::sort(
+		pibdPeers.begin(),
+		pibdPeers.end(),
+		[](const ConnectedPeer* lhs, const ConnectedPeer* rhs) {
+			if (lhs->GetTotalDifficulty() != rhs->GetTotalDifficulty()) {
+				return lhs->GetTotalDifficulty() > rhs->GetTotalDifficulty();
+			}
+			if (lhs->GetDirection() != rhs->GetDirection()) {
+				return lhs->GetDirection() == EDirection::OUTBOUND;
+			}
+			return lhs->GetHeight() > rhs->GetHeight();
+		});
+
+	if (!m_pPipeline->StartPIBD(pHeader)) {
+		return false;
+	}
+
+	ConnectedPeer* pSelectedPeer = pibdPeers.front();
+	m_pPeer = pSelectedPeer->GetPeer();
+	m_timeRequested = std::chrono::system_clock::now();
+	m_requestedHeight = requestedHeight;
+	m_lastPIBDProgressLeaves = syncStatus.GetPIBDCompletedLeaves();
+	m_lastPIBDProgressTime = std::chrono::steady_clock::now();
+
+	// Build peer list: primary first, then any additional eligible peers
+	std::vector<PeerConstPtr> pibdPeerList;
+	for (ConnectedPeer* cp : pibdPeers) {
+		pibdPeerList.push_back(cp->GetPeer());
+	}
+	if (pibdPeerList.size() > PIBD::SEGMENT_REQUEST_COUNT) {
+		pibdPeerList.resize(PIBD::SEGMENT_REQUEST_COUNT);
+	}
+
+	LOG_INFO(StringUtil::Format(
+		"Selected {} eligible PIBD peer(s), using {} peer(s), primary: {} height={} difficulty={}.",
+		pibdPeers.size(),
+		pibdPeerList.size(),
+		m_pPeer,
+		pSelectedPeer->GetHeight(),
+		pSelectedPeer->GetTotalDifficulty()));
+	return m_pPipeline->RequestNextPIBDSegments(pConnectionManager, pibdPeerList);
+}
+
+bool StateSyncer::RequestZipState(SyncStatus& syncStatus)
+{
+	if (m_pPeer != nullptr)
+	{
+		LOG_WARNING(StringUtil::Format("TxHashSet/PIBD timeout from peer: {}, trying zip fallback.", m_pPeer));
+		m_pPipeline->AbortPIBD();
 		m_pPeer = nullptr;
+		syncStatus.UpdateStatus(ESyncStatus::SYNCING_TXHASHSET);
 	}
 
 	if (Global::IsRunning())
 	{
-		const uint64_t headerHeight = syncStatus.GetHeaderHeight();
-		const uint64_t requestedHeight = headerHeight - Consensus::STATE_SYNC_THRESHOLD;
-		Hash hash = m_pBlockChain->GetBlockHeaderByHeight(requestedHeight, EChainType::CANDIDATE)->GetHash();
+		const auto pConnectionManager = m_pConnectionManager.lock();
+		if (pConnectionManager == nullptr) {
+			return false;
+		}
 
+		const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+		const uint64_t requestedHeight = Consensus::GetTxHashSetArchiveHeight(headerHeight);
+		BlockHeaderPtr pHeader = m_pBlockChain->GetBlockHeaderByHeight(requestedHeight, EChainType::CANDIDATE);
+		if (pHeader == nullptr) {
+			return false;
+		}
+
+		Hash hash = pHeader->GetHash();
 		const TxHashSetRequestMessage txHashSetRequestMessage(std::move(hash), requestedHeight);
-		m_pPeer = m_pConnectionManager.lock()->SendMessageToMostWorkPeer(txHashSetRequestMessage);
+		m_pPeer = pConnectionManager->SendMessageToMostWorkPeer(txHashSetRequestMessage);
 
 		if (m_pPeer != nullptr)
 		{

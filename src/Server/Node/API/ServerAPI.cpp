@@ -73,6 +73,17 @@ int ServerAPI::GetStatus_Handler(struct mg_connection* conn, void* pNodeContext)
 	stateNode["downloaded"] = pSyncStatus->GetDownloaded();
 	stateNode["download_size"] = pSyncStatus->GetDownloadSize();
 	stateNode["processing_status"] = pSyncStatus->GetProcessingStatus();
+	stateNode["processing_current"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
+	stateNode["processing_total"] = Json::UInt64(pSyncStatus->GetProcessingTotal());
+	if (pSyncStatus->GetStatus() == ESyncStatus::SYNCING_TXHASHSET_PIBD)
+	{
+		stateNode["aborted"] = pSyncStatus->GetPIBDAborted();
+		stateNode["errored"] = pSyncStatus->GetPIBDErrored();
+		stateNode["completed_leaves"] = Json::UInt64(pSyncStatus->GetPIBDCompletedLeaves());
+		stateNode["leaves_required"] = Json::UInt64(pSyncStatus->GetPIBDLeavesRequired());
+		stateNode["completed_to_height"] = Json::UInt64(pSyncStatus->GetPIBDCompletedToHeight());
+		stateNode["required_height"] = Json::UInt64(pSyncStatus->GetPIBDRequiredHeight());
+	}
 	statusNode["state"] = stateNode;
 
 	Json::Value networkNode;
@@ -110,9 +121,49 @@ std::string ServerAPI::GetStatusString(const SyncStatus& syncStatus)
 		{
 			return "DOWNLOADING_TXHASHSET";
 		}
+		case ESyncStatus::SYNCING_TXHASHSET_PIBD:
+		{
+			return "TXHASHSET_PIBD";
+		}
 		case ESyncStatus::PROCESSING_TXHASHSET:
 		{
 			return "PROCESSING_TXHASHSET";
+		}
+		case ESyncStatus::TXHASHSET_PIBD_LEAFSET_UPDATE:
+		{
+			return "TXHASHSET_PIBD_LEAFSET_UPDATE";
+		}
+		case ESyncStatus::TXHASHSET_SETUP:
+		{
+			return "TXHASHSET_SETUP";
+		}
+		case ESyncStatus::TXHASHSET_RANGE_PROOFS_VALIDATION:
+		{
+			return "TXHASHSET_RANGEPROOFS_VALIDATION";
+		}
+		case ESyncStatus::TXHASHSET_KERNEL_HISTORY_VALIDATION:
+		{
+			return "TXHASHSET_KERNEL_HISTORY_VALIDATION";
+		}
+		case ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION:
+		{
+			return "TXHASHSET_KERNEL_SUMS_VALIDATION";
+		}
+		case ESyncStatus::TXHASHSET_NRD_KERNELS_VALIDATION:
+		{
+			return "TXHASHSET_NRD_KERNELS_VALIDATION";
+		}
+		case ESyncStatus::TXHASHSET_KERNEL_SIGNATURES_VALIDATION:
+		{
+			return "TXHASHSET_KERNEL_SIGNATURES_VALIDATION";
+		}
+		case ESyncStatus::TXHASHSET_SAVE:
+		{
+			return "TXHASHSET_SAVE";
+		}
+		case ESyncStatus::TXHASHSET_DONE:
+		{
+			return "TXHASHSET_DONE";
 		}
 		case ESyncStatus::SYNCING_BLOCKS:
 		{

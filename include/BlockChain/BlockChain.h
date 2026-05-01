@@ -53,6 +53,7 @@ public:
 
 	virtual fs::path SnapshotTxHashSet(BlockHeaderPtr pBlockHeader) = 0;
 	virtual EBlockChainStatus ProcessTransactionHashSet(const Hash& blockHash, const fs::path& path, SyncStatus& syncStatus) = 0;
+	virtual EBlockChainStatus ProcessPIBDTransactionHashSet(const Hash& blockHash, SyncStatus& syncStatus) = 0;
 	virtual EBlockChainStatus AddTransaction(TransactionPtr pTransaction, const EPoolType poolType) = 0;
 	virtual TransactionPtr GetTransactionByKernelHash(const Hash& kernelHash) const = 0;
 

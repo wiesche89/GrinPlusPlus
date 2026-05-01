@@ -63,6 +63,7 @@ std::shared_ptr<P2PServer> P2PServer::Create(
 		config,
 		pConnectionManager,
 		pBlockChain,
+		pTxHashSetManager,
 		pSyncStatus
 	);
 
