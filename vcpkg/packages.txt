@@ -1,5 +1,4 @@
 libsodium
-rocksdb
 zlib
 civetweb
 minizip
@@ -9,3 +8,4 @@ fmt
 secp256k1-zkp
 mio
 catch2
+libuuid

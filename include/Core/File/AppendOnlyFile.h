@@ -23,12 +23,15 @@ public:
 
 	void Load();
 	bool Flush();
+	void Commit();
 
 	void Append(const std::vector<unsigned char>& data);
 	bool Rewind(const uint64_t nextPosition);
 
 	void Discard() noexcept;
+	void Rollback() noexcept;
 	uint64_t GetSize() const noexcept;
+	const fs::path& GetPath() const noexcept { return m_path; }
 
 	bool Read(
 		const uint64_t position,

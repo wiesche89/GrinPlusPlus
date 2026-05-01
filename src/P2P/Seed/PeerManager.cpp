@@ -30,9 +30,9 @@ std::shared_ptr<Locked<PeerManager>> PeerManager::Create(const Context::Ptr& pCo
 
     if (Global::GetConfig().GetPreferredPeers().size() > 0) {
         LOG_INFO("Preferred peers found.");
-        for (const IPAddress& ipAddress : Global::GetConfig().GetPreferredPeers()) {
+        for (const SocketAddress& address : Global::GetConfig().GetPreferredPeerAddresses()) {
             try {
-                const PeerPtr& peer = std::make_shared<Peer>(ipAddress);
+                const PeerPtr& peer = std::make_shared<Peer>(address.GetIPAddress(), address.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "");
                 pPeerManager->m_peersByAddress.emplace(peer->GetIPAddress(), PeerEntry(peer));
             }
             catch (std::exception& e) {
@@ -188,8 +188,11 @@ void PeerManager::AddFreshPeers(const std::vector<SocketAddress>& peerAddresses)
 {
     for (auto& socketAddress : peerAddresses) {
         const IPAddress& ipAddress = socketAddress.GetIPAddress();
-        if (m_peersByAddress.find(ipAddress) == m_peersByAddress.end()) {
-            m_peersByAddress.emplace(ipAddress, PeerEntry(std::make_shared<Peer>(ipAddress)));
+        auto iter = m_peersByAddress.find(ipAddress);
+        if (iter == m_peersByAddress.end()) {
+            m_peersByAddress.emplace(ipAddress, PeerEntry(std::make_shared<Peer>(ipAddress, socketAddress.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "")));
+        } else if (iter->second.m_peer->GetPort() == 0 && socketAddress.GetPortNumber() > 0) {
+            iter->second.m_peer->UpdatePort(socketAddress.GetPortNumber());
         }
     }
 }
@@ -200,7 +203,7 @@ void PeerManager::BanPeer(const IPAddress& address, const EBanReason banReason)
     if (iter != m_peersByAddress.end()) {
         iter->second.m_peer->Ban(banReason);
     } else {
-        PeerPtr peer = std::make_shared<Peer>(address, 0, Capabilities(0), "");
+        PeerPtr peer = std::make_shared<Peer>(address, 0, 0, Capabilities(0), "");
         peer->Ban(banReason);
         m_peersByAddress.emplace(address, PeerEntry(peer, TimeUtil::Now()));
     }

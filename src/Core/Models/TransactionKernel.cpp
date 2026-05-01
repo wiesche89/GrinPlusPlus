@@ -6,20 +6,33 @@
 #include <Crypto/Crypto.h>
 #include <Crypto/Hasher.h>
 
-TransactionKernel::TransactionKernel(const EKernelFeatures features, const Fee& fee, const uint64_t lockHeight, Commitment&& excessCommitment, Signature&& excessSignature)
+TransactionKernel::TransactionKernel(
+	const EKernelFeatures features,
+	const Fee& fee,
+	const uint64_t lockHeight,
+	Commitment&& excessCommitment,
+	Signature&& excessSignature)
 	: m_features(features), m_fee(fee), m_lockHeight(lockHeight), m_excessCommitment(std::move(excessCommitment)), m_excessSignature(std::move(excessSignature))
 {
-		Serializer serializer{ EProtocolVersion::V1 };
-		Serialize(serializer);
-		m_hash = Hasher::Blake2b(serializer.GetBytes());
+	// Kernel ordering and PMMR roots are consensus-critical and use the
+	// original fixed-width kernel hash, even when kernels are stored or
+	// transmitted with a newer variable-width serialization.
+	Serializer serializer{ EProtocolVersion::V1 };
+	Serialize(serializer);
+	m_hash = Hasher::Blake2b(serializer.GetBytes());
 }
 
-TransactionKernel::TransactionKernel(const EKernelFeatures features, const Fee& fee, const uint64_t lockHeight, const Commitment& excessCom, const Signature& excessSig)
+TransactionKernel::TransactionKernel(
+	const EKernelFeatures features,
+	const Fee& fee,
+	const uint64_t lockHeight,
+	const Commitment& excessCom,
+	const Signature& excessSig)
 	: m_features(features), m_fee(fee), m_lockHeight(lockHeight), m_excessCommitment(excessCom), m_excessSignature(excessSig)
 {
-		Serializer serializer{ EProtocolVersion::V1 };
-		Serialize(serializer);
-		m_hash = Hasher::Blake2b(serializer.GetBytes());
+	Serializer serializer{ EProtocolVersion::V1 };
+	Serialize(serializer);
+	m_hash = Hasher::Blake2b(serializer.GetBytes());
 }
 
 void TransactionKernel::Serialize(Serializer& serializer) const
@@ -59,12 +72,14 @@ void TransactionKernel::Serialize(Serializer& serializer) const
 
 TransactionKernel TransactionKernel::Deserialize(ByteBuffer& byteBuffer)
 {
+	const EProtocolVersion protocolVersion = byteBuffer.GetProtocolVersion();
+
 	// Read KernelFeatures (1 byte)
 	const EKernelFeatures features = (EKernelFeatures)byteBuffer.ReadU8();
 
 	Fee fee;
 	uint64_t lockHeight = 0;
-	if (byteBuffer.GetProtocolVersion() >= EProtocolVersion::V2)
+	if (protocolVersion >= EProtocolVersion::V2)
 	{
 		if (features != EKernelFeatures::COINBASE_KERNEL)
 		{
@@ -102,7 +117,13 @@ TransactionKernel TransactionKernel::Deserialize(ByteBuffer& byteBuffer)
 		}
 	}
 
-	return TransactionKernel((EKernelFeatures)features, fee, lockHeight, std::move(excessCommitment), std::move(excessSignature));
+	return TransactionKernel(
+		(EKernelFeatures)features,
+		fee,
+		lockHeight,
+		std::move(excessCommitment),
+		std::move(excessSignature)
+	);
 }
 
 Json::Value TransactionKernel::ToJSON() const

@@ -12,11 +12,14 @@ namespace ConfigProps
 	{
 		static const std::string P2P = "P2P";
 
+		static const std::string P2P_PORT = "P2P_PORT";
 		static const std::string MIN_PEERS = "MIN_PEERS";
 		static const std::string MAX_PEERS = "MAX_PEERS";
 		static const std::string PREFERRED_PEERS = "PREFERRED_PEERS";
 		static const std::string ALLOWED_PEERS = "ALLOWED_PEERS";
 		static const std::string BLOCKED_PEERS = "BLOCKED_PEERS";
+		static const std::string LISTEN_PORT = "LISTEN_PORT";
+		static const std::string MIN_SYNC_PEERS = "MIN_SYNC_PEERS";
 	}
 
 	namespace Dandelion

@@ -76,6 +76,7 @@ void Seeder::Thread_Seed(Seeder& seeder)
     LOG_TRACE("BEGIN");
 
     auto lastConnectTime = std::chrono::system_clock::now() - std::chrono::seconds(5);
+    auto lastDNSTime = std::chrono::system_clock::now() - std::chrono::minutes(10);
 
     const size_t minimumConnections = Global::GetConfig().GetMinPeers();
     while (!seeder.m_terminate && Global::IsRunning()) {
@@ -84,6 +85,15 @@ void Seeder::Thread_Seed(Seeder& seeder)
 
             auto now = std::chrono::system_clock::now();
             const size_t numOutbound = seeder.m_connectionManager.GetNumOutbound();
+
+            if (numOutbound < minimumConnections && lastDNSTime + std::chrono::minutes(5) < now) {
+                lastDNSTime = now;
+                LOG_INFO("Refreshing peers from DNS seeders");
+                std::vector<SocketAddress> peerAddresses = DNSSeeder::GetPeersFromDNS();
+                LOG_INFO_F("DNS seeders returned {} addresses", peerAddresses.size());
+                seeder.m_peerManager.Write()->AddFreshPeers(peerAddresses);
+            }
+
             if (numOutbound < minimumConnections && lastConnectTime + std::chrono::seconds(5) < now) {
                 lastConnectTime = now;
 
@@ -108,7 +118,7 @@ void Seeder::StartListener()
     try {
         m_pAcceptor = std::make_shared<asio::ip::tcp::acceptor>(
             *m_pAsioContext,
-            asio::ip::tcp::endpoint(asio::ip::tcp::v4(), Global::GetConfig().GetP2PPort())
+            asio::ip::tcp::endpoint(asio::ip::tcp::v4(), Global::GetConfig().GetListenPort())
         );
 
         m_pSocket = std::make_shared<asio::ip::tcp::socket>(*m_pAsioContext);
@@ -131,27 +141,30 @@ void Seeder::Accept(const asio::error_code& ec)
         pSocket->SetOpen(true);
 
         if (Global::GetConfig().IsPeerBlocked(pSocket->GetIPAddress())) {
-            LOG_TRACE_F("peer is blocked: {}",  pSocket->GetIPAddress());
-            return;
-        }
+            LOG_TRACE_F("peer is blocked: {}", pSocket->GetIPAddress());
+            asio::error_code ignoreError;
+            m_pSocket->close(ignoreError);
+        } else if (!Global::GetConfig().IsPeerAllowed(pSocket->GetIPAddress())) {
+            LOG_TRACE_F("peer is not allowed: {}", pSocket->GetIPAddress());
+            asio::error_code ignoreError;
+            m_pSocket->close(ignoreError);
+        } else {
+            auto pPeer = m_peerManager.Write()->GetPeer(pSocket->GetIPAddress());
 
-        if (!Global::GetConfig().IsPeerAllowed(pSocket->GetIPAddress())) {
-            LOG_TRACE_F("peer is not allowed: {}",  pSocket->GetIPAddress());        
-            return;
-        }
-
-        auto pPeer = m_peerManager.Write()->GetPeer( pSocket->GetIPAddress());
-
-        if (!pPeer->IsBanned()) {
-            auto pConnection = std::make_shared<Connection>(
-                pSocket,
-                m_nextId++,
-                m_connectionManager,
-                ConnectedPeer(pPeer, EDirection::INBOUND, pSocket->GetPort()),
-                m_pSyncStatus,
-                m_pMessageProcessor
-            );
-            pConnection->Connect();
+            if (!pPeer->IsBanned()) {
+                auto pConnection = std::make_shared<Connection>(
+                    pSocket,
+                    m_nextId++,
+                    m_connectionManager,
+                    ConnectedPeer(pPeer, EDirection::INBOUND, pSocket->GetPort()),
+                    m_pSyncStatus,
+                    m_pMessageProcessor
+                );
+                pConnection->Connect();
+            } else {
+                asio::error_code ignoreError;
+                m_pSocket->close(ignoreError);
+            }
         }
     } else {
         asio::error_code ignoreError;
@@ -166,12 +179,12 @@ void Seeder::SeedNewConnection()
 {
     PeerPtr pPeer = m_peerManager.Write()->GetNewPeer(Capabilities::FAST_SYNC_NODE);
     if (pPeer != nullptr) {
-        LOG_TRACE_F("Attempting to seed: {}", pPeer);
+        LOG_DEBUG_F("Attempting to connect to: {}", pPeer);
 
         ConnectedPeer connectedPeer(
             pPeer,
             EDirection::OUTBOUND,
-            Global::GetConfig().GetP2PPort()
+            pPeer->GetPort() > 0 ? pPeer->GetPort() : Global::GetConfig().GetP2PPort()
         );
         SocketPtr pSocket(new Socket(
             connectedPeer.GetSocketAddress(),
@@ -204,8 +217,5 @@ void Seeder::SeedNewConnection()
         );
         
         pConnection->Connect();
-    } else if (!m_usedDNS.exchange(true)) {
-        std::vector<SocketAddress> peerAddresses = DNSSeeder::GetPeersFromDNS();
-        m_peerManager.Write()->AddFreshPeers(peerAddresses);
     }
 }

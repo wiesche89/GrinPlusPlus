@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace caches

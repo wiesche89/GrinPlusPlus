@@ -36,6 +36,7 @@ namespace P2P
 	// How long a banned peer should be banned for
 	static const int64_t BAN_WINDOW = 10800;
 
-	// Number of seconds to wait before retrying to connect to peer
-	static const uint32_t RETRY_WINDOW = 5 * 60;
+	// Number of seconds to wait before retrying to connect to a peer.
+	// Keep this short during bootstrap so dead DNS entries don't stall peer discovery.
+	static const uint32_t RETRY_WINDOW = 30;
 }

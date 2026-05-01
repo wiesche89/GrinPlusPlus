@@ -14,5 +14,5 @@ public:
 	static std::vector<SocketAddress> GetPeersFromDNS();
 
 private:
-	static std::vector<IPAddress> Resolve(const std::string& domainName);
+	static std::vector<SocketAddress> ResolveSeed(const std::string& seedEntry);
 };

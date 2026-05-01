@@ -25,6 +25,7 @@ public:
 		: m_dirty(false),
 		m_connected(false),
 		m_ipAddress(ipAddress),
+		m_port(0),
 		m_version(0),
 		m_capabilities(Capabilities(Capabilities::UNKNOWN)),
 		m_userAgent(""),
@@ -35,10 +36,11 @@ public:
 	{
 
 	}
-	Peer(const IPAddress& ipAddress, const uint32_t version, const Capabilities& capabilities, const std::string& userAgent)
+	Peer(const IPAddress& ipAddress, const uint16_t port, const uint32_t version, const Capabilities& capabilities, const std::string& userAgent)
 		: m_dirty(false),
 		m_connected(false),
 		m_ipAddress(ipAddress),
+		m_port(port),
 		m_version(version),
 		m_capabilities(capabilities),
 		m_userAgent(userAgent),
@@ -49,10 +51,11 @@ public:
 	{
 
 	}
-	Peer(const IPAddress& ipAddress, const uint32_t version, const Capabilities& capabilities, const std::string& userAgent, const std::time_t lastContactTime, const std::time_t lastBanTime, const EBanReason banReason)
+	Peer(const IPAddress& ipAddress, const uint16_t port, const uint32_t version, const Capabilities& capabilities, const std::string& userAgent, const std::time_t lastContactTime, const std::time_t lastBanTime, const EBanReason banReason)
 		: m_dirty(false),
 		m_connected(false),
 		m_ipAddress(ipAddress),
+		m_port(port),
 		m_version(version), 
 		m_capabilities(capabilities), 
 		m_userAgent(userAgent), 
@@ -78,6 +81,7 @@ public:
 	Peer& operator=(const Peer& other)
 	{
 		m_ipAddress = other.m_ipAddress;
+		m_port = other.m_port.load();
 		m_version = other.m_version;
 		m_capabilities = other.m_capabilities.load();
 		m_userAgent = other.m_userAgent;
@@ -96,6 +100,11 @@ public:
 	void SetConnected(const bool connected) noexcept
 	{
 		m_connected = connected;
+		m_dirty = true;
+	}
+	void UpdatePort(const uint16_t port) noexcept
+	{
+		m_port = port;
 		m_dirty = true;
 	}
 	void UpdateVersion(const uint32_t version) noexcept
@@ -125,6 +134,7 @@ public:
 	bool IsDirty() const noexcept { return m_dirty; }
 	bool IsConnected() const noexcept { return m_connected; }
 	const IPAddress& GetIPAddress() const noexcept { return m_ipAddress; }
+	uint16_t GetPort() const noexcept { return m_port; }
 	uint32_t GetVersion() const noexcept { return m_version; }
 	Capabilities GetCapabilities() const noexcept { return m_capabilities; }
 	const std::string& GetUserAgent() const noexcept { return m_userAgent; }
@@ -150,6 +160,7 @@ public:
 		serializer.Append<int64_t>(m_lastContactTime.load());
 		serializer.Append<int64_t>(m_lastBanTime.load());
 		serializer.Append<int32_t>(m_banReason.load());
+		serializer.Append<uint16_t>(m_port.load());
 	}
 
 	static std::shared_ptr<Peer> Deserialize(ByteBuffer& byteBuffer)
@@ -161,9 +172,14 @@ public:
 		std::time_t lastContactTime = (std::time_t)byteBuffer.Read64();
 		std::time_t lastBanTime = (std::time_t)byteBuffer.Read64();
 		EBanReason banReason = (EBanReason)byteBuffer.Read32();
+		uint16_t port = 0;
+		if (byteBuffer.GetRemainingSize() >= sizeof(uint16_t)) {
+			port = byteBuffer.ReadU16();
+		}
 
 		return std::shared_ptr<Peer>(new Peer(
 			socketAddress.GetIPAddress(),
+			port,
 			version,
 			capabilities,
 			userAgent,
@@ -176,7 +192,7 @@ public:
 	Json::Value ToJSON() const
 	{
 		Json::Value json;
-		json["addr"] = GetIPAddress().Format();
+		json["addr"] = GetPort() > 0 ? SocketAddress(GetIPAddress(), GetPort()).Format() : GetIPAddress().Format();
 		json["capabilities"] = GetCapabilities().ToJSON();
 		json["user_agent"] = GetUserAgent();
 		json["flags"] = IsBanned() ? "Banned" : "Healthy";
@@ -193,6 +209,7 @@ private:
 	std::atomic_bool m_dirty;
 	std::atomic_bool m_connected;
 	IPAddress m_ipAddress;
+	std::atomic<uint16_t> m_port;
 	uint32_t m_version;
 	std::atomic<Capabilities> m_capabilities;
 	std::string m_userAgent;

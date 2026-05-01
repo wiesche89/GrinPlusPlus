@@ -5,7 +5,7 @@
 
 namespace Genesis
 {
-	/* HASH: cb272478ee4abbf41a3d8cc8f2f828785cf38bd7f0dcacfdd6db5f8f2d8f6e24 */
+	/* HASH: edc758c1370d43e1d733f70f58cf187c3be8242830429b1676b89fd91ccf2dab */
 	static FullBlock FLOONET_GENESIS
 	(
 

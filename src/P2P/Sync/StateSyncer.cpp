@@ -67,13 +67,13 @@ bool StateSyncer::IsStateSyncDue(const SyncStatus& syncStatus) const
 		return true;
 	}
 
-	// If 10 seconds elapsed with no progress, try another peer.
-	if ((m_timeRequested + std::chrono::seconds(10)) < std::chrono::system_clock::now())
+	// If 60 seconds elapsed with no progress, try another peer.
+	if ((m_timeRequested + std::chrono::seconds(60)) < std::chrono::system_clock::now())
 	{
 		const uint64_t downloaded = syncStatus.GetDownloaded();
 		if (downloaded == 0)
 		{
-			LOG_WARNING("10 seconds elapsed and download still not started.");
+			LOG_WARNING("60 seconds elapsed and download still not started.");
 			return true;
 		}
 	}
@@ -91,8 +91,7 @@ bool StateSyncer::RequestState(const SyncStatus& syncStatus)
 {
 	if (m_pPeer != nullptr)
 	{
-		LOG_WARNING_F("Banning peer: {}", m_pPeer);
-		m_pPeer->Ban(EBanReason::BadTxHashSet);
+		LOG_WARNING_F("TxHashSet timeout from peer: {}, trying next peer.", m_pPeer);
 		m_pPeer = nullptr;
 	}
 

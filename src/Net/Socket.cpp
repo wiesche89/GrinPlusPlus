@@ -4,6 +4,7 @@
 #include <Net/SocketException.h>
 #include <Core/Global.h>
 #include <Common/Util/ThreadUtil.h>
+#include <Common/Util/HexUtil.h>
 #include <Common/Logger.h>
 
 static unsigned long DEFAULT_TIMEOUT = 1 * 1000;
@@ -75,10 +76,13 @@ bool Socket::IsActive() const
 
 bool Socket::SetDefaultOptions()
 {
+    asio::error_code ec;
     asio::socket_base::receive_buffer_size option(32 * 1024);
-    m_pSocket->set_option(option);
+    m_pSocket->set_option(option, ec);
+    if (ec) { return false; }
     asio::ip::tcp::no_delay no_delay_option(true);
-    m_pSocket->set_option(no_delay_option);
+    m_pSocket->set_option(no_delay_option, ec);
+    if (ec) { return false; }
 
 #ifdef _WIN32
     if (setsockopt(m_pSocket->native_handle(), SOL_SOCKET, SO_RCVTIMEO, (char*)&DEFAULT_TIMEOUT, sizeof(DEFAULT_TIMEOUT)) == SOCKET_ERROR) {
@@ -231,6 +235,7 @@ std::vector<uint8_t> Socket::ReceiveSync(const size_t num_bytes, const bool incr
     std::chrono::time_point timeout = std::chrono::system_clock::now() + std::chrono::seconds(10);
     while (!HasReceivedData()) {
         if (std::chrono::system_clock::now() >= timeout || !Global::IsRunning()) {
+            LOG_DEBUG(StringUtil::Format("ReceiveSync timed out waiting for {} bytes from {}", num_bytes, m_address));
             return {};
         }
 
@@ -242,8 +247,20 @@ std::vector<uint8_t> Socket::ReceiveSync(const size_t num_bytes, const bool incr
     size_t numTries = 0;
     size_t bytesRead = 0;
     while (numTries++ < 5) {
+        m_errorCode.clear();
         bytesRead += asio::read(*m_pSocket, asio::buffer(bytes.data() + bytesRead, num_bytes - bytesRead), m_errorCode);
         if (m_errorCode && m_errorCode.value() != EAGAIN && m_errorCode.value() != EWOULDBLOCK) {
+            const size_t bytesToLog = (std::min)(bytesRead, static_cast<size_t>(32));
+            bytes.resize(bytesRead);
+            LOG_DEBUG(StringUtil::Format(
+                "ReceiveSync failed reading {} bytes from {} after {} bytes. ec={} '{}', data={}",
+                num_bytes,
+                m_address,
+                bytesRead,
+                m_errorCode.value(),
+                m_errorCode.message(),
+                bytesToLog > 0 ? HexUtil::ConvertToHex(bytes, bytesToLog) : std::string("<empty>")
+            ));
             ThrowSocketException(m_errorCode);
         }
 
@@ -254,12 +271,31 @@ std::vector<uint8_t> Socket::ReceiveSync(const size_t num_bytes, const bool incr
 
             return bytes;
         } else if (m_errorCode.value() == EAGAIN || m_errorCode.value() == EWOULDBLOCK) {
-            LOG_DEBUG("EAGAIN error returned. Pausing briefly, and then trying again.");
+            const size_t bytesToLog = (std::min)(bytesRead, static_cast<size_t>(32));
+            LOG_DEBUG(StringUtil::Format(
+                "ReceiveSync partial read from {}: {}/{} bytes after try {}. ec={} '{}', data={}",
+                m_address,
+                bytesRead,
+                num_bytes,
+                numTries,
+                m_errorCode.value(),
+                m_errorCode.message(),
+                bytesToLog > 0 ? HexUtil::ConvertToHex(bytes, bytesToLog) : std::string("<empty>")
+            ));
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
     }
 
-    return {};
+    bytes.resize(bytesRead);
+    const size_t bytesToLog = (std::min)(bytesRead, static_cast<size_t>(32));
+    LOG_DEBUG(StringUtil::Format(
+        "ReceiveSync exhausted retries reading {} bytes from {}. Returning {} bytes: {}",
+        num_bytes,
+        m_address,
+        bytesRead,
+        bytesToLog > 0 ? HexUtil::ConvertToHex(bytes, bytesToLog) : std::string("<empty>")
+    ));
+    return bytes;
 }
 
 bool Socket::HasReceivedData()

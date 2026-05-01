@@ -14,6 +14,13 @@ if(WIN32)
 else()
 		#include_directories(${GOBJECT_INCLUDE_DIR})
 		file(COPY ${CURRENT_PORT_DIR}/nix/libsecp256k1-config.h DESTINATION ${SOURCE_PATH})
+        if(VCPKG_TARGET_ARCHITECTURE MATCHES "arm")
+            # Disable x86-only assembly optimizations when cross-compiling for ARM.
+            vcpkg_replace_string(
+                "${SOURCE_PATH}/libsecp256k1-config.h"
+                "#define USE_ASM_X86_64 1"
+                "/* #undef USE_ASM_X86_64 */")
+        endif()
 endif()
 
 file(COPY ${CMAKE_CURRENT_LIST_DIR}/CMakeLists.txt DESTINATION ${SOURCE_PATH})

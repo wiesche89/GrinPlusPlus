@@ -6,6 +6,7 @@
 #include <filesystem.h>
 #include <json/json.h>
 #include <Net/IPAddress.h>
+#include <Net/SocketAddress.h>
 #include <unordered_set>
 
 class Config
@@ -43,10 +44,12 @@ public:
 	void SetMaxPeers(int max_peers) noexcept;
 
 	uint16_t GetP2PPort() const noexcept;
+	uint16_t GetListenPort() const noexcept;
 	const std::vector<uint8_t>& GetMagicBytes() const noexcept;
 
 	uint8_t GetMinSyncPeers() const noexcept;
 
+	const std::vector<SocketAddress>& GetPreferredPeerAddresses() const noexcept;
 	const std::unordered_set<IPAddress>& GetPreferredPeers() const noexcept;
 	const std::unordered_set<IPAddress>& GetAllowedPeers() const noexcept;
 	const std::unordered_set<IPAddress>& GetBlockedPeers() const noexcept;

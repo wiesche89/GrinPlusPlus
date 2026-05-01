@@ -12,6 +12,7 @@
 #include <Common/Logger.h>
 #include <BlockChain/BlockChain.h>
 #include <thread>
+#include <atomic>
 
 std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
 {
@@ -199,12 +200,10 @@ bool TxHashSetValidator::ValidateKernelHistory(const KernelMMR& kernelMMR, const
 
 BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const BlockHeader& blockHeader) const
 {
-	// Calculate overage
 	const int64_t overage = 0 - (Consensus::REWARD * (1 + blockHeader.GetHeight()));
 
-	// Determine output commitments
-	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
 	std::vector<Commitment> outputCommitments;
+	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
 	for (LeafIndex output_idx = LeafIndex::At(0); output_idx < blockHeader.GetNumOutputs(); output_idx++) {
 		std::unique_ptr<OutputIdentifier> pOutput = pOutputPMMR->GetAt(output_idx);
 		if (pOutput != nullptr) {
@@ -212,9 +211,8 @@ BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const Blo
 		}
 	}
 
-	// Determine kernel excess commitments
-	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
 	std::vector<Commitment> excessCommitments;
+	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
 	for (LeafIndex kernel_idx = LeafIndex::At(0); kernel_idx < blockHeader.GetNumKernels(); kernel_idx++) {
 		std::unique_ptr<TransactionKernel> pKernel = pKernelMMR->GetKernelAt(kernel_idx);
 		if (pKernel != nullptr) {
@@ -236,8 +234,6 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 {
 	std::vector<std::pair<Commitment, RangeProof>> rangeProofs;
 
-	size_t i = 0;
-	LOG_INFO("BEGIN");
 	const uint64_t outputMMRSize = txHashSet.GetOutputPMMR()->GetSize();
 	for (LeafIndex leaf_idx = LeafIndex::At(0); leaf_idx.GetPosition() < outputMMRSize; leaf_idx++)
 	{
@@ -252,7 +248,6 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 			}
 
 			rangeProofs.emplace_back(std::make_pair(pOutput->GetCommitment(), *pRangeProof));
-			++i;
 
 			if (rangeProofs.size() >= 1000)
 			{
@@ -268,15 +263,11 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 		}
 	}
 
-	if (!rangeProofs.empty())
+	if (!rangeProofs.empty() && !Crypto::VerifyRangeProofs(rangeProofs))
 	{
-		if (!Crypto::VerifyRangeProofs(rangeProofs))
-		{
-			return false;
-		}
+		return false;
 	}
 
-	LOG_INFO_F("SUCCESS ({})", i);
 	return true;
 }
 
@@ -293,7 +284,7 @@ bool TxHashSetValidator::ValidateKernelSignatures(const KernelMMR& kernelMMR, Sy
 
 		kernels.push_back(*pKernel);
 
-		if (kernels.size() >= 2000) {
+		if (kernels.size() >= 5000) {
 			if (!KernelSignatureValidator::BatchVerify(kernels)) {
 				return false;
 			}
@@ -304,9 +295,5 @@ bool TxHashSetValidator::ValidateKernelSignatures(const KernelMMR& kernelMMR, Sy
 		}
 	}
 
-	if (!KernelSignatureValidator::BatchVerify(kernels)) {
-		return false;
-	}
-
-	return true;
+	return KernelSignatureValidator::BatchVerify(kernels);
 }

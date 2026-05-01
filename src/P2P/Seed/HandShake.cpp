@@ -32,13 +32,17 @@ void HandShake::PerformOutboundHandshake(const Socket::Ptr& pSocket, ConnectedPe
     // Send Hand Message
     TransmitHandMessage(pSocket);
 
+    LOG_DEBUG(StringUtil::Format("Waiting for Shake from {}", connectedPeer));
+
     // Get Shake Message
     auto pReceived = RetrieveMessage(pSocket, *connectedPeer.GetPeer());
     if (pReceived == nullptr) {
+        LOG_DEBUG(StringUtil::Format("No complete message header received while waiting for Shake from {}", connectedPeer));
         throw PROTOCOL_EXCEPTION("Shake message not received");
     }
 
     if (pReceived->GetMessageType() != MessageTypes::Shake) {
+        LOG_DEBUG(StringUtil::Format("Expected Shake from {} but received {}", connectedPeer, MessageTypes::ToString(pReceived->GetMessageType())));
         throw PROTOCOL_EXCEPTION_F("Expected shake but received {}.", *pReceived);
     }
 
@@ -78,6 +82,7 @@ void HandShake::PerformInboundHandshake(const Socket::Ptr& pSocket, ConnectedPee
     connectedPeer.UpdateCapabilities(hand_message.GetCapabilities());
     connectedPeer.UpdateUserAgent(hand_message.GetUserAgent());
     connectedPeer.UpdateTotals(hand_message.GetTotalDifficulty(), 0);
+    connectedPeer.GetPeer()->UpdatePort(hand_message.GetSenderAddress().GetPortNumber());
 
     uint32_t version = (std::min)(P2P::PROTOCOL_VERSION, hand_message.GetVersion());
     connectedPeer.UpdateVersion(version);
@@ -88,15 +93,28 @@ void HandShake::PerformInboundHandshake(const Socket::Ptr& pSocket, ConnectedPee
 
 void HandShake::TransmitHandMessage(const Socket::Ptr& pSocket) const
 {
-    IPAddress localHostIP = IPAddress::CreateV4({ 0x7F, 0x00, 0x00, 0x01 });
+    SocketAddress senderAddress(
+        pSocket->GetAsioSocket()->local_endpoint().address().to_string(),
+        Global::GetConfig().GetListenPort()
+    );
+    SocketAddress receiverAddress(pSocket->GetAsioSocket()->remote_endpoint().address().to_string(), pSocket->GetAsioSocket()->remote_endpoint().port());
+
+    LOG_DEBUG(StringUtil::Format(
+        "Sending Hand to {} with genesis hash {} (sender={}, receiver={})",
+        pSocket->GetSocketAddress(),
+        Global::GetGenesisHash().ToHex(),
+        senderAddress,
+        receiverAddress
+    ));
+
     HandMessage hand(
         P2P::PROTOCOL_VERSION,
         Capabilities::FAST_SYNC_NODE,
         SELF_NONCE,
         Global::GetGenesisHash(),
         m_pSyncStatus->GetBlockDifficulty(),
-        SocketAddress(localHostIP, Global::GetConfig().GetP2PPort()),
-        SocketAddress(localHostIP, pSocket->GetPort()),
+        SocketAddress(senderAddress),
+        SocketAddress(receiverAddress),
         P2P::USER_AGENT
     );
 
@@ -124,6 +142,11 @@ std::unique_ptr<RawMessage> HandShake::RetrieveMessage(const Socket::Ptr& pSocke
 {
     std::vector<uint8_t> headerBuffer = pSocket->ReceiveSync(11, true);
     if (headerBuffer.size() != 11) {
+        LOG_DEBUG(StringUtil::Format(
+            "Failed to read complete message header from {}. Received {} of 11 bytes.",
+            peer,
+            headerBuffer.size()
+        ));
         return nullptr;
     }
 

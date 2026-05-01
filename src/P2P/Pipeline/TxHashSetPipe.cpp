@@ -15,6 +15,7 @@
 #include <fstream>
 
 static const int BUFFER_SIZE = 128 * 1024;
+static const unsigned long TXHASHSET_RECEIVE_TIMEOUT_MS = 60 * 1000;
 
 TxHashSetPipe::~TxHashSetPipe()
 {
@@ -77,14 +78,24 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 		LoggerAPI::SetThreadName("TXHASHSET_PIPE");
 		LOG_TRACE("BEGIN");
 
-		LOG_INFO_F("Downloading TxHashSet from {}", *pConnection);
+		LOG_INFO_F("Downloading TxHashSet from {} (zipped_size={})", *pConnection, zipped_size);
+
+		if (zipped_size == 0) {
+			LOG_WARNING_F("Peer {} sent TxHashSet with zipped_size=0, skipping.", *pConnection);
+			pipeline.m_processing = false;
+			pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
+			pConnection->DisableReceives(false);
+			return;
+		}
 
 		pipeline.m_pSyncStatus->UpdateDownloaded(0);
 		pipeline.m_pSyncStatus->UpdateDownloadSize(zipped_size);
 
 		SocketPtr pSocket = pConnection->GetSocket();
-		pSocket->SetReceiveTimeout(10 * 1000);
 		pSocket->SetDefaultOptions();
+		// SetDefaultOptions() resets the Windows socket timeouts, so apply the
+		// longer TxHashSet timeout afterwards.
+		pSocket->SetReceiveTimeout(TXHASHSET_RECEIVE_TIMEOUT_MS);
 		pSocket->SetBlocking(true);
 		pSocket->SetReceiveBufferSize(BUFFER_SIZE);
 
@@ -94,7 +105,7 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 		size_t bytesReceived = 0;
 		std::vector<uint8_t> buffer(BUFFER_SIZE, 0);
 		while (bytesReceived < zipped_size) {
-			const int bytesToRead = (std::min)((int)(zipped_size - bytesReceived), BUFFER_SIZE);
+			const size_t bytesToRead = (std::min)((size_t)(zipped_size - bytesReceived), (size_t)BUFFER_SIZE);
 
 			const bool received = pConnection->ReceiveSync(buffer, bytesToRead);
 			if (!received || !Global::IsRunning()) {
@@ -108,9 +119,7 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 				FileUtil::RemoveFile(txHashSetPath);
 				pipeline.m_processing = false;
 				pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
-				pConnection->BanPeer(EBanReason::BadTxHashSet);
-				
-				pConnection->DisableReceives(false);		
+				pConnection->DisableReceives(false);
 				return;
 			}
 
@@ -144,14 +153,23 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 
 		LOG_TRACE("END");
 	}
+	catch (const std::exception& e)
+	{
+		LOG_ERROR_F("Exception thrown while downloading/processing TxHashSet from {} user_agent: {} error: {}",
+			*pConnection,
+			pConnection->GetPeer()->GetUserAgent(),
+			e.what());
+
+		pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
+		FileUtil::RemoveFile(txHashSetPath);
+	}
 	catch (...)
 	{
-		LOG_ERROR_F("Exception thrown while downloading/processing TxHashSet from {} user_agent: {}", 
+		LOG_ERROR_F("Unknown exception thrown while downloading/processing TxHashSet from {} user_agent: {}",
 			*pConnection,
 			pConnection->GetPeer()->GetUserAgent());
-		
+
 		pipeline.m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
-		pConnection->BanPeer(EBanReason::BadTxHashSet);
 		FileUtil::RemoveFile(txHashSetPath);
 	}
 

@@ -283,15 +283,3 @@ inline std::ostream& operator<<(std::ostream& os, const CBigInteger<NUM_BYTES, A
 {
 	return os << v.ToHex();
 }
-
-namespace Catch {
-	template<typename T, typename = void> struct StringMaker;
-	template<size_t NUM_BYTES, class ALLOC>
-	struct StringMaker<CBigInteger<NUM_BYTES, ALLOC>, void>
-	{
-		static std::string convert(const CBigInteger<NUM_BYTES, ALLOC>& v)
-		{
-			return v.ToHex();
-		}
-	};
-}

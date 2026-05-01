@@ -151,7 +151,10 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
                 peers.cbegin(),
                 peers.cend(),
                 std::back_inserter(socketAddresses),
-                [this](const PeerPtr& peer) { return SocketAddress(peer->GetIPAddress(), Global::GetConfig().GetP2PPort()); }
+                [](const PeerPtr& peer) {
+                    const uint16_t port = peer->GetPort() > 0 ? peer->GetPort() : Global::GetConfig().GetP2PPort();
+                    return SocketAddress(peer->GetIPAddress(), port);
+                }
             );
 
             LOG_TRACE_F("Sending {} addresses to {}.", socketAddresses.size(), pConnection);

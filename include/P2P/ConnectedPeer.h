@@ -44,7 +44,7 @@ public:
 	Json::Value ToJSON() const
 	{
 		Json::Value json;
-		json["addr"] = GetPeer()->GetIPAddress().Format();;
+		json["addr"] = GetSocketAddress().Format();
 		json["capabilities"] = GetPeer()->GetCapabilities().ToJSON();
 		json["direction"] = GetDirection() == EDirection::OUTBOUND ? "Outbound" : "Inbound";
 		json["height"] = Json::UInt64(GetHeight());

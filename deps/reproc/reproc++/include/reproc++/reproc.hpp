@@ -48,7 +48,7 @@ struct options {
     redirect in;
     redirect out;
     redirect err;
-  } redirect = {};
+  } redir = {};
 
   struct stop_actions stop_actions = {};
 };

@@ -164,9 +164,19 @@ bool TxHashSet::ApplyBlock(std::shared_ptr<IBlockDB> pBlockDB, const FullBlock& 
 
 bool TxHashSet::ValidateRoots(const BlockHeader& blockHeader) const
 {
-    if (m_pKernelMMR->Root(blockHeader.GetKernelMMRSize()) != blockHeader.GetKernelRoot()) {
-        LOG_ERROR_F("Kernel root not matching for header ({})", blockHeader);
-        return false;
+    {
+        const Hash computedRoot = m_pKernelMMR->Root(blockHeader.GetKernelMMRSize());
+        const Hash& expectedRoot = blockHeader.GetKernelRoot();
+        if (computedRoot != expectedRoot) {
+            LOG_ERROR_F("Kernel root mismatch (header={}, version={}, mmr_size={}, hash_file_size={}, computed={}, expected={})",
+                blockHeader,
+                (uint32_t)blockHeader.GetVersion(),
+                blockHeader.GetKernelMMRSize(),
+                m_pKernelMMR->GetSize(),
+                computedRoot,
+                expectedRoot);
+            return false;
+        }
     }
 
     Hash outputRoot = m_pOutputPMMR->Root(blockHeader.GetOutputMMRSize());

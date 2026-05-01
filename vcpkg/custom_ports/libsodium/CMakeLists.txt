@@ -59,8 +59,17 @@ file(GLOB sodium_headers
 if (UNIX)
     file(GLOB_RECURSE sodium_sources
         ${PROJECT_SOURCE_DIR}/src/libsodium/*.c
-        ${PROJECT_SOURCE_DIR}/src/libsodium/*.S # HAVE_AVX_ASM
     )
+
+    # Einige Assembly-Implementierungen sind nur f�r x86/x86_64 g�ltig.
+    # Beim Cross-Build f�r ARM/andere Architekturen f�hrt das zu Assembler-
+    # Fehlern. Daher nur f�r die bekannten x86-Targets einbinden.
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|i[3-6]86)$")
+        file(GLOB_RECURSE sodium_asm_sources
+            ${PROJECT_SOURCE_DIR}/src/libsodium/*.S # HAVE_AVX_ASM
+        )
+        list(APPEND sodium_sources ${sodium_asm_sources})
+    endif ()
 else ()
     file(GLOB_RECURSE sodium_sources
         ${PROJECT_SOURCE_DIR}/src/libsodium/*.c
@@ -357,40 +366,42 @@ else ()
         endif ()
     endif ()
 
-    check_c_source_runs(
-        "
-        #ifdef __native_client__
-        # error NativeClient detected - Avoiding AVX512F opcodes
-        #endif
-        #pragma GCC target(\"avx512f\")
-        #include <immintrin.h>
-        
-        #ifndef __AVX512F__
-        # error No AVX512 support
-        #elif defined(__clang__)
-        # if __clang_major__ < 4
-        #  error Compiler AVX512 support may be broken
-        # endif
-        #elif defined(__GNUC__)
-        # if __GNUC__ < 6
-        #  error Compiler AVX512 support may be broken
-        # endif
-        #endif
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|i[3-6]86)$")
+        check_c_source_runs(
+            "
+            #ifdef __native_client__
+            # error NativeClient detected - Avoiding AVX512F opcodes
+            #endif
+            #pragma GCC target(\"avx512f\")
+            #include <immintrin.h>
+            
+            #ifndef __AVX512F__
+            # error No AVX512 support
+            #elif defined(__clang__)
+            # if __clang_major__ < 4
+            #  error Compiler AVX512 support may be broken
+            # endif
+            #elif defined(__GNUC__)
+            # if __GNUC__ < 6
+            #  error Compiler AVX512 support may be broken
+            # endif
+            #endif
  
-        int main(void) {
-          __m512i x = _mm512_setzero_epi32();
-          __m512i y = _mm512_permutexvar_epi64(_mm512_setr_epi64(0, 1, 4, 5, 2, 3, 6, 7), x);
-        }
-        "
-        HAVE_AVX512FINTRIN_H
-    )
+            int main(void) {
+              __m512i x = _mm512_setzero_epi32();
+              __m512i y = _mm512_permutexvar_epi64(_mm512_setr_epi64(0, 1, 4, 5, 2, 3, 6, 7), x);
+            }
+            "
+            HAVE_AVX512FINTRIN_H
+        )
 
-    #if (HAVE_AVX512FINTRIN_H)
-        #target_compile_definitions(${LIBRARY_NAME} PRIVATE HAVE_AVX512FINTRIN_H=1)
-        #target_compile_options(${LIBRARY_NAME} PRIVATE -mavx512f)
-    #else ()
-        target_compile_options(${LIBRARY_NAME} PRIVATE -mno-avx512f)
-    #endif ()
+        #if (HAVE_AVX512FINTRIN_H)
+            #target_compile_definitions(${LIBRARY_NAME} PRIVATE HAVE_AVX512FINTRIN_H=1)
+            #target_compile_options(${LIBRARY_NAME} PRIVATE -mavx512f)
+        #else ()
+            target_compile_options(${LIBRARY_NAME} PRIVATE -mno-avx512f)
+        #endif ()
+    endif ()
 
     check_c_source_runs(
         "

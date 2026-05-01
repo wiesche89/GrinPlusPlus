@@ -33,6 +33,14 @@ bool AppendOnlyFile::Flush()
 	return true;
 }
 
+void AppendOnlyFile::Commit()
+{
+	if (!Flush())
+	{
+		throw FILE_EXCEPTION("Commit failed.");
+	}
+}
+
 void AppendOnlyFile::Append(const std::vector<unsigned char>& data)
 {
 	m_buffer.insert(m_buffer.end(), data.cbegin(), data.cend());
@@ -68,6 +76,11 @@ void AppendOnlyFile::Discard() noexcept
 {
 	m_bufferIndex = m_fileSize;
 	m_buffer.clear();
+}
+
+void AppendOnlyFile::Rollback() noexcept
+{
+	Discard();
 }
 
 uint64_t AppendOnlyFile::GetSize() const noexcept

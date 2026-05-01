@@ -3,6 +3,7 @@
 #include <Consensus.h>
 #include <BlockChain/BlockChain.h>
 #include <Net/Clients/RPC/RPC.h>
+#include <Net/SocketAddress.h>
 #include <Net/Servers/RPC/RPCMethod.h>
 #include <optional>
 #include <vector>
@@ -61,7 +62,7 @@ public:
 			for (PeerConstPtr peer : peers)
 			{
 				Json::Value peerJson;
-				peerJson["addr"] = peer->GetIPAddress().Format();
+				peerJson["addr"] = peer->GetPort() > 0 ? SocketAddress(peer->GetIPAddress(), peer->GetPort()).Format() : peer->GetIPAddress().Format();
 				peerJson["ban_reason"] = BanReason::Format(peer->GetBanReason());
 				peerJson["capabilities"] = peer->GetCapabilities().ToJSON();
 				peerJson["flags"] = peer->IsBanned() ? "Banned" : "Healthy";
@@ -79,7 +80,7 @@ public:
 				{
 					auto peer = peerOpt.value();
 					Json::Value peerJson;
-					peerJson["addr"] = peer->GetIPAddress().Format();
+					peerJson["addr"] = peer->GetPort() > 0 ? SocketAddress(peer->GetIPAddress(), peer->GetPort()).Format() : peer->GetIPAddress().Format();
 					peerJson["ban_reason"] = BanReason::Format(peer->GetBanReason());
 					peerJson["capabilities"] = peer->GetCapabilities().ToJSON();
 					peerJson["flags"] = peer->IsBanned() ? "Banned" : "Healthy";
