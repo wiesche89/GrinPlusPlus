@@ -447,6 +447,11 @@ std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> TxHashSet::GetO
 	return TxHashSetSegmenter(*this).OutputSegment(identifier);
 }
 
+Hash TxHashSet::GetOutputBitmapRoot(const uint64_t numOutputs) const
+{
+	return m_pOutputPMMR->UBMTRoot(numOutputs);
+}
+
 std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> TxHashSet::GetRangeProofSegment(const SegmentIdentifier& identifier) const
 {
 	return TxHashSetSegmenter(*this).RangeProofSegment(identifier);

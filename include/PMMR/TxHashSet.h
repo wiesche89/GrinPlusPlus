@@ -148,6 +148,10 @@ public:
 		const SegmentIdentifier& identifier
 	) const = 0;
 
+	virtual Hash GetOutputBitmapRoot(
+		const uint64_t numOutputs
+	) const = 0;
+
 	virtual std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> GetRangeProofSegment(
 		const SegmentIdentifier& identifier
 	) const = 0;

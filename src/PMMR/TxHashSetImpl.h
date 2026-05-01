@@ -54,6 +54,7 @@ public:
 
 	std::optional<BitmapSegment> GetOutputBitmapSegment(const SegmentIdentifier& identifier) const final;
 	std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> GetOutputSegment(const SegmentIdentifier& identifier) const final;
+	Hash GetOutputBitmapRoot(const uint64_t numOutputs) const final;
 	std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> GetRangeProofSegment(const SegmentIdentifier& identifier) const final;
 	std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> GetKernelSegment(const SegmentIdentifier& identifier) const final;
 

@@ -271,7 +271,8 @@ void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnec
 
 	std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> segment = pTxHashSet->GetOutputSegment(identifier);
 	if (segment.has_value()) {
-		pConnection->SendAsync(OutputSegmentMessage(blockHash, std::move(segment.value()), pHeader->GetOutputRoot()));
+		const Hash outputBitmapRoot = pTxHashSet->GetOutputBitmapRoot(pHeader->GetNumOutputs());
+		pConnection->SendAsync(OutputSegmentMessage(blockHash, std::move(segment.value()), outputBitmapRoot));
 	}
 }
 
