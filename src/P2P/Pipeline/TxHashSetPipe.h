@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <limits>
+#include <chrono>
 
 // Forward Declarations
 class ConnectionManager;
@@ -110,4 +111,9 @@ private:
 	std::unique_ptr<TxHashSetDesegmenter> m_pDesegmenter;
 	SegmentRequestTracker m_segmentRequests;
 	uint64_t m_lastLoggedPIBDCompletedLeaves{ std::numeric_limits<uint64_t>::max() };
+	uint64_t m_cachedPIBDCompletedToHeight{ 0 };
+	uint64_t m_lastPIBDStatusHeightCalcLeaves{ std::numeric_limits<uint64_t>::max() };
+	std::chrono::steady_clock::time_point m_lastPIBDStatusHeightCalcTime{};
+	size_t m_pibdNextPeerIndex{ 0 };
+	size_t m_uncommittedPIBDSegments{ 0 };
 };

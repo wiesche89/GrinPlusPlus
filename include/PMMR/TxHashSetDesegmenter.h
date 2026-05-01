@@ -43,6 +43,7 @@ public:
 		m_appliedOutputMMRSize = 0;
 		m_appliedRangeProofMMRSize = 0;
 		m_appliedKernelMMRSize = 0;
+		m_nextDesiredTypeOffset = 0;
 		CalculateBitmapMMRSizes();
 	}
 
@@ -243,31 +244,54 @@ public:
 			return desired;
 		}
 
-		const size_t perTreeLimit = (std::max<size_t>)(1, maxElements / 3);
+		std::vector<SegmentTypeIdentifier> outputDesired;
+		std::vector<SegmentTypeIdentifier> rangeProofDesired;
+		std::vector<SegmentTypeIdentifier> kernelDesired;
 		AppendDesiredSegments(
-			desired,
-			perTreeLimit,
+			outputDesired,
+			maxElements,
 			SegmentType::Output,
 			m_archiveHeader.GetOutputMMRSize(),
 			PIBD::OUTPUT_SEGMENT_HEIGHT,
 			m_appliedOutputMMRSize,
 			m_outputSegments);
 		AppendDesiredSegments(
-			desired,
-			perTreeLimit * 2,
+			rangeProofDesired,
+			maxElements,
 			SegmentType::RangeProof,
 			m_archiveHeader.GetOutputMMRSize(),
 			PIBD::RANGEPROOF_SEGMENT_HEIGHT,
 			m_appliedRangeProofMMRSize,
 			m_rangeProofSegments);
 		AppendDesiredSegments(
-			desired,
+			kernelDesired,
 			maxElements,
 			SegmentType::Kernel,
 			m_archiveHeader.GetKernelMMRSize(),
 			PIBD::KERNEL_SEGMENT_HEIGHT,
 			m_appliedKernelMMRSize,
 			m_kernelSegments);
+
+		const size_t typeOffset = m_nextDesiredTypeOffset++ % 3;
+		for (size_t index = 0; desired.size() < maxElements; ++index) {
+			bool appended = false;
+			for (size_t typeIndex = 0; typeIndex < 3 && desired.size() < maxElements; ++typeIndex) {
+				const size_t rotatedType = (typeOffset + typeIndex) % 3;
+				if (rotatedType == 0 && index < outputDesired.size()) {
+					desired.push_back(outputDesired[index]);
+					appended = true;
+				} else if (rotatedType == 1 && index < rangeProofDesired.size()) {
+					desired.push_back(rangeProofDesired[index]);
+					appended = true;
+				} else if (rotatedType == 2 && index < kernelDesired.size()) {
+					desired.push_back(kernelDesired[index]);
+					appended = true;
+				}
+			}
+			if (!appended) {
+				break;
+			}
+		}
 
 		m_allSegmentsComplete =
 			desired.empty() &&
@@ -276,6 +300,46 @@ public:
 			m_appliedKernelMMRSize == m_archiveHeader.GetKernelMMRSize();
 
 		return desired;
+	}
+
+	std::vector<SegmentTypeIdentifier> GetBlockingSegments() const
+	{
+		std::vector<SegmentTypeIdentifier> blockers;
+
+		if (!m_bitmapCacheComplete) {
+			AppendBlockingSegment(
+				blockers,
+				SegmentType::OutputBitmap,
+				m_bitmapMMRSize,
+				PIBD::BITMAP_SEGMENT_HEIGHT,
+				m_appliedBitmapMMRSize,
+				m_bitmapSegments);
+			return blockers;
+		}
+
+		AppendBlockingSegment(
+			blockers,
+			SegmentType::Output,
+			m_archiveHeader.GetOutputMMRSize(),
+			PIBD::OUTPUT_SEGMENT_HEIGHT,
+			m_appliedOutputMMRSize,
+			m_outputSegments);
+		AppendBlockingSegment(
+			blockers,
+			SegmentType::RangeProof,
+			m_archiveHeader.GetOutputMMRSize(),
+			PIBD::RANGEPROOF_SEGMENT_HEIGHT,
+			m_appliedRangeProofMMRSize,
+			m_rangeProofSegments);
+		AppendBlockingSegment(
+			blockers,
+			SegmentType::Kernel,
+			m_archiveHeader.GetKernelMMRSize(),
+			PIBD::KERNEL_SEGMENT_HEIGHT,
+			m_appliedKernelMMRSize,
+			m_kernelSegments);
+
+		return blockers;
 	}
 
 	bool ApplyNextBitmapSegment()
@@ -354,44 +418,51 @@ public:
 	}
 
 	template<typename APPLY_OUTPUT, typename APPLY_RANGEPROOF, typename APPLY_KERNEL>
-	bool ApplyReadySegments(
+	std::optional<size_t> ApplyReadySegments(
 		APPLY_OUTPUT applyOutputSegment,
 		APPLY_RANGEPROOF applyRangeProofSegment,
 		APPLY_KERNEL applyKernelSegment)
 	{
 		if (!m_bitmapCacheComplete) {
-			return true;
+			return 0;
 		}
 
-		if (!ApplyReadySegmentBatch(
+		size_t appliedCount = 0;
+		std::optional<size_t> outputCount = ApplyReadySegmentBatch(
 			m_outputSegments,
 			m_appliedOutputMMRSize,
 			PIBD::OUTPUT_SEGMENT_HEIGHT,
 			m_archiveHeader.GetOutputMMRSize(),
 			"output",
-			applyOutputSegment)) {
-			return false;
+			applyOutputSegment);
+		if (!outputCount.has_value()) {
+			return std::nullopt;
 		}
+		appliedCount += outputCount.value();
 
-		if (!ApplyReadySegmentBatch(
+		std::optional<size_t> rangeProofCount = ApplyReadySegmentBatch(
 			m_rangeProofSegments,
 			m_appliedRangeProofMMRSize,
 			PIBD::RANGEPROOF_SEGMENT_HEIGHT,
 			m_archiveHeader.GetOutputMMRSize(),
 			"rangeproof",
-			applyRangeProofSegment)) {
-			return false;
+			applyRangeProofSegment);
+		if (!rangeProofCount.has_value()) {
+			return std::nullopt;
 		}
+		appliedCount += rangeProofCount.value();
 
-		if (!ApplyReadySegmentBatch(
+		std::optional<size_t> kernelCount = ApplyReadySegmentBatch(
 			m_kernelSegments,
 			m_appliedKernelMMRSize,
 			PIBD::KERNEL_SEGMENT_HEIGHT,
 			m_archiveHeader.GetKernelMMRSize(),
 			"kernel",
-			applyKernelSegment)) {
-			return false;
+			applyKernelSegment);
+		if (!kernelCount.has_value()) {
+			return std::nullopt;
 		}
+		appliedCount += kernelCount.value();
 
 		m_allSegmentsComplete =
 			m_bitmapCacheComplete &&
@@ -399,7 +470,7 @@ public:
 			m_appliedRangeProofMMRSize == m_archiveHeader.GetOutputMMRSize() &&
 			m_appliedKernelMMRSize == m_archiveHeader.GetKernelMMRSize();
 
-		return true;
+		return appliedCount;
 	}
 
 private:
@@ -466,6 +537,27 @@ private:
 		}
 	}
 
+	template<typename SEGMENT>
+	static void AppendBlockingSegment(
+		std::vector<SegmentTypeIdentifier>& blockers,
+		const SegmentType type,
+		const uint64_t targetMMRSize,
+		const uint8_t height,
+		const uint64_t localMMRSize,
+		const std::vector<SEGMENT>& cache)
+	{
+		const size_t totalSegments = SegmentIdentifier::CountSegmentsRequired(targetMMRSize, height);
+		const uint64_t nextIndex = NextRequiredSegmentIndex(localMMRSize, height);
+		if (nextIndex >= totalSegments) {
+			return;
+		}
+
+		SegmentIdentifier identifier(height, nextIndex);
+		if (!IsSegmentApplied(identifier, targetMMRSize, localMMRSize) && !HasSegment(cache, identifier)) {
+			blockers.emplace_back(type, identifier);
+		}
+	}
+
 	static uint64_t NextRequiredSegmentIndex(const uint64_t localMMRSize, const uint8_t height) noexcept
 	{
 		if (localMMRSize == 0 || localMMRSize == 1) {
@@ -505,7 +597,7 @@ private:
 	}
 
 	template<typename SEGMENT, typename APPLY_SEGMENT>
-	static bool ApplyReadySegmentBatch(
+	static std::optional<size_t> ApplyReadySegmentBatch(
 		std::vector<SEGMENT>& cache,
 		uint64_t& appliedMMRSize,
 		const uint8_t height,
@@ -515,6 +607,9 @@ private:
 	{
 		uint64_t nextIndex = NextRequiredSegmentIndex(appliedMMRSize, height);
 		size_t appliedCount = 0;
+		uint64_t firstAppliedIndex = 0;
+		uint64_t lastAppliedIndex = 0;
+		uint64_t initialAppliedMMRSize = appliedMMRSize;
 		while (appliedCount < PIBD::SEGMENT_APPLY_BATCH_SIZE) {
 			const auto iter = std::find_if(
 				cache.begin(),
@@ -543,7 +638,6 @@ private:
 				break;
 			}
 
-			const uint64_t previousAppliedMMRSize = appliedMMRSize;
 			if (!applySegment(*iter, targetMMRSize)) {
 				LOG_WARNING(StringUtil::Format(
 					"PIBD {} apply failed for segment {}:{} at applied_mmr_size={}, target_mmr_size={}.",
@@ -552,26 +646,34 @@ private:
 					iter->GetIdentifier().GetIndex(),
 					appliedMMRSize,
 					targetMMRSize));
-				return false;
+				return std::nullopt;
 			}
 
-			const std::pair<uint64_t, uint64_t> range = iter->GetIdentifier().GetPositionRange(targetMMRSize);
+			if (appliedCount == 0) {
+				firstAppliedIndex = iter->GetIdentifier().GetIndex();
+				initialAppliedMMRSize = appliedMMRSize;
+			}
+			lastAppliedIndex = iter->GetIdentifier().GetIndex();
 			appliedMMRSize = AppliedMMRSizeAfterSegment(iter->GetIdentifier(), targetMMRSize);
-			LOG_DEBUG(StringUtil::Format(
-				"PIBD {} applied segment {}:{} range={}..{}, applied_mmr_size {} -> {}.",
-				segmentType,
-				iter->GetIdentifier().GetHeight(),
-				iter->GetIdentifier().GetIndex(),
-				range.first,
-				range.second,
-				previousAppliedMMRSize,
-				appliedMMRSize));
 			cache.erase(iter);
 			++nextIndex;
 			++appliedCount;
 		}
 
-		return true;
+		if (appliedCount > 0) {
+			LOG_DEBUG(StringUtil::Format(
+				"PIBD {} applied {} segment(s) {}:{}..{}:{}, applied_mmr_size {} -> {}.",
+				segmentType,
+				appliedCount,
+				height,
+				firstAppliedIndex,
+				height,
+				lastAppliedIndex,
+				initialAppliedMMRSize,
+				appliedMMRSize));
+		}
+
+		return appliedCount;
 	}
 
 	void CalculateBitmapMMRSizes()
@@ -591,6 +693,7 @@ private:
 	uint64_t m_appliedOutputMMRSize{ 0 };
 	uint64_t m_appliedRangeProofMMRSize{ 0 };
 	uint64_t m_appliedKernelMMRSize{ 0 };
+	size_t m_nextDesiredTypeOffset{ 0 };
 
 	std::vector<BitmapPMMRSegment> m_bitmapSegments;
 	std::vector<OutputPMMRSegment> m_outputSegments;

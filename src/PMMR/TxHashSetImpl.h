@@ -5,7 +5,10 @@
 #include "RangeProofPMMR.h"
 
 #include <PMMR/TxHashSet.h>
+#include <PMMR/Common/BitmapAccumulator.h>
 #include <Core/Config.h>
+#include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 
@@ -65,10 +68,17 @@ public:
 	void UpdateLeafSets(const BitmapAccumulator& outputBitmap, const uint64_t numOutputs) final;
 
 private:
+	void BuildOutputBitmapCache() const;
+	void InvalidateOutputBitmapCache() const;
+
 	std::shared_ptr<KernelMMR> m_pKernelMMR;
 	std::shared_ptr<OutputPMMR> m_pOutputPMMR;
 	std::shared_ptr<RangeProofPMMR> m_pRangeProofPMMR;
 
 	BlockHeaderPtr m_pBlockHeader;
 	BlockHeaderPtr m_pBlockHeaderBackup;
+
+	mutable std::mutex m_outputBitmapCacheMutex;
+	mutable std::optional<BitmapAccumulator> m_outputBitmapCache;
+	mutable uint64_t m_outputBitmapCacheOutputMMRSize{ 0 };
 };

@@ -17,6 +17,7 @@
 
 #include <filesystem.h>
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 
 static const int BUFFER_SIZE = 128 * 1024;
@@ -53,6 +54,22 @@ static const char* GetPIBDSegmentTypeName(const SegmentType type) noexcept
 	}
 
 	return "unknown";
+}
+
+static uint64_t GetPeerReportedHeight(const std::shared_ptr<ConnectionManager>& pConnectionManager, const PeerConstPtr& pPeer)
+{
+	if (pConnectionManager == nullptr || pPeer == nullptr) {
+		return 0;
+	}
+
+	const std::string peerAddress = pPeer->GetIPAddress().Format();
+	for (const ConnectedPeer& connectedPeer : pConnectionManager->GetConnectedPeers()) {
+		if (connectedPeer.GetPeer() != nullptr && connectedPeer.GetIPAddress().Format() == peerAddress) {
+			return connectedPeer.GetHeight();
+		}
+	}
+
+	return 0;
 }
 
 TxHashSetPipe::~TxHashSetPipe()
@@ -155,11 +172,11 @@ void TxHashSetPipe::Thread_ProcessTxHashSet(TxHashSetPipe& pipeline, Connection:
 
 			const bool received = pConnection->ReceiveSync(buffer, bytesToRead);
 			if (!received || !Global::IsRunning()) {
-				LOG_INFO_F("bytesReceived: {} zipped_size: {} user_agent: {}", 
-					bytesReceived, 
+				LOG_INFO_F("bytesReceived: {} zipped_size: {} user_agent: {}",
+					bytesReceived,
 					zipped_size,
 					pConnection->GetPeer()->GetUserAgent());
-					
+
 				LOG_ERROR("Transmission ended abruptly");
 				fout.close();
 				FileUtil::RemoveFile(txHashSetPath);
@@ -573,6 +590,11 @@ bool TxHashSetPipe::StartPIBD(const BlockHeaderPtr& pArchiveHeader)
 	m_pibdBlockHash = pEffectiveArchiveHeader->GetHash();
 	m_segmentRequests = SegmentRequestTracker();
 	m_lastLoggedPIBDCompletedLeaves = std::numeric_limits<uint64_t>::max();
+	m_cachedPIBDCompletedToHeight = 0;
+	m_lastPIBDStatusHeightCalcLeaves = std::numeric_limits<uint64_t>::max();
+	m_lastPIBDStatusHeightCalcTime = {};
+	m_pibdNextPeerIndex = 0;
+	m_uncommittedPIBDSegments = 0;
 	m_processing = true;
 	UpdatePIBDStatus();
 	LOG_INFO_F("Started PIBD for header {}", *pEffectiveArchiveHeader);
@@ -593,7 +615,7 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 			return false;
 		}
 
-		if (!m_pDesegmenter->ApplyReadySegments(
+		const std::optional<size_t> appliedSegments = m_pDesegmenter->ApplyReadySegments(
 			[pTxHashSet](const TxHashSetDesegmenter::OutputPMMRSegment& segment, const uint64_t targetSize) {
 				const bool applied = pTxHashSet->ApplyOutputSegment(segment, targetSize);
 				if (!applied) {
@@ -620,11 +642,18 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 						segment.GetIdentifier().GetIndex()));
 				}
 				return applied;
-			})) {
+			});
+		if (!appliedSegments.has_value()) {
 			UpdatePIBDStatus(false, true);
 			return false;
 		}
-		pTxHashSet->Commit();
+
+		m_uncommittedPIBDSegments += appliedSegments.value();
+		if (m_uncommittedPIBDSegments >= PIBD::PIBD_COMMIT_SEGMENT_THRESHOLD) {
+			pTxHashSet->Commit();
+			LOG_DEBUG(StringUtil::Format("Committed {} applied PIBD segment(s).", m_uncommittedPIBDSegments));
+			m_uncommittedPIBDSegments = 0;
+		}
 	}
 	UpdatePIBDStatus();
 
@@ -646,6 +675,7 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 				m_pDesegmenter->GetBitmapAccumulator(),
 				m_pDesegmenter->GetArchiveHeader().GetNumOutputs());
 			pTxHashSet->Commit();
+			m_uncommittedPIBDSegments = 0;
 		}
 
 		m_pSyncStatus->UpdateStatus(ESyncStatus::TXHASHSET_SETUP);
@@ -668,41 +698,119 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 	const std::vector<SegmentRequestTracker::PendingRequest> timedOutRequests = m_segmentRequests.GetTimedOutRequests();
 	if (!timedOutRequests.empty()) {
 		LOG_DEBUG(StringUtil::Format("Retrying {} timed-out PIBD segment requests.", timedOutRequests.size()));
+		if (m_uncommittedPIBDSegments >= PIBD::PIBD_COMMIT_SEGMENT_THRESHOLD) {
+			auto txHashSetWriter = m_pTxHashSetManager->Write();
+			auto pTxHashSet = txHashSetWriter->GetTxHashSet();
+			if (pTxHashSet != nullptr) {
+				pTxHashSet->Commit();
+				LOG_DEBUG(StringUtil::Format("Committed {} applied PIBD segment(s) before retrying timed-out requests.", m_uncommittedPIBDSegments));
+			}
+			m_uncommittedPIBDSegments = 0;
+		}
 		m_segmentRequests.RemoveTimedOutRequests();
 	}
 
-	const size_t pendingCount = m_segmentRequests.GetPendingRequests().size();
-	if (pendingCount >= PIBD::SEGMENT_REQUEST_COUNT) {
+	std::vector<PeerConstPtr> requestPeers;
+	requestPeers.reserve(peers.size());
+	for (const PeerConstPtr& peer : peers) {
+		if (peer != nullptr) {
+			requestPeers.push_back(peer);
+		}
+	}
+
+	if (requestPeers.empty()) {
 		UpdatePIBDStatus();
 		return true;
 	}
 
-	const size_t requestBudget = PIBD::SEGMENT_REQUEST_COUNT - pendingCount;
+	const size_t pendingCount = m_segmentRequests.GetPendingRequests().size();
+	const size_t requestBudget = pendingCount < PIBD::SEGMENT_REQUEST_COUNT ? PIBD::SEGMENT_REQUEST_COUNT - pendingCount : 0;
 	const size_t desiredCandidateCount = PIBD::SEGMENT_REQUEST_COUNT + pendingCount;
 	const std::vector<SegmentTypeIdentifier> desired = m_pDesegmenter->NextDesiredSegments(desiredCandidateCount);
 	std::vector<SegmentTypeIdentifier> requestsToSend;
-	requestsToSend.reserve(requestBudget);
+	std::vector<SegmentTypeIdentifier> retryRequests;
+	requestsToSend.reserve(requestBudget + PIBD::BLOCKING_SEGMENT_RETRY_COUNT + PIBD::BLOCKING_SEGMENT_HEDGE_COUNT);
+	retryRequests.reserve(PIBD::BLOCKING_SEGMENT_RETRY_COUNT + PIBD::BLOCKING_SEGMENT_HEDGE_COUNT);
+	size_t newRequestCount = 0;
+	const auto blockingRetryDelay = std::chrono::seconds(PIBD::BLOCKING_SEGMENT_RETRY_SECS);
 	for (const SegmentTypeIdentifier& typeId : desired) {
 		if (!m_segmentRequests.IsPending(typeId)) {
+			if (newRequestCount < requestBudget) {
+				requestsToSend.push_back(typeId);
+				++newRequestCount;
+			}
+		} else if (retryRequests.size() < PIBD::BLOCKING_SEGMENT_RETRY_COUNT && m_segmentRequests.CanRetry(typeId, blockingRetryDelay)) {
 			requestsToSend.push_back(typeId);
-			if (requestsToSend.size() >= requestBudget) {
+			retryRequests.push_back(typeId);
+			LOG_DEBUG(StringUtil::Format("Retrying blocked PIBD {} segment {}:{} after {}s.",
+				GetPIBDSegmentTypeName(typeId.GetSegmentType()),
+				typeId.GetIdentifier().GetHeight(),
+				typeId.GetIdentifier().GetIndex(),
+				PIBD::BLOCKING_SEGMENT_RETRY_SECS));
+		}
+
+		if (newRequestCount >= requestBudget && retryRequests.size() >= PIBD::BLOCKING_SEGMENT_RETRY_COUNT) {
+			break;
+		}
+	}
+
+	if (requestPeers.size() > 1 && retryRequests.size() < PIBD::BLOCKING_SEGMENT_HEDGE_COUNT) {
+		const std::vector<SegmentTypeIdentifier> blockers = m_pDesegmenter->GetBlockingSegments();
+		for (const SegmentTypeIdentifier& typeId : blockers) {
+			if (retryRequests.size() >= PIBD::BLOCKING_SEGMENT_HEDGE_COUNT) {
 				break;
 			}
+
+			const uint16_t hedgeDelaySecs = typeId.GetSegmentType() == SegmentType::OutputBitmap
+				? PIBD::BITMAP_BLOCKING_SEGMENT_HEDGE_SECS
+				: PIBD::BLOCKING_SEGMENT_HEDGE_SECS;
+			const auto hedgeDelay = std::chrono::seconds(hedgeDelaySecs);
+			if (!m_segmentRequests.IsPending(typeId) || !m_segmentRequests.CanHedge(typeId, hedgeDelay)) {
+				continue;
+			}
+
+			const bool alreadyQueued = std::any_of(
+				requestsToSend.begin(),
+				requestsToSend.end(),
+				[&typeId](const SegmentTypeIdentifier& requestTypeId) { return requestTypeId == typeId; });
+			if (alreadyQueued) {
+				continue;
+			}
+
+			requestsToSend.push_back(typeId);
+			retryRequests.push_back(typeId);
+			LOG_DEBUG(StringUtil::Format("Hedging blocked PIBD {} segment {}:{} after {}s.",
+				GetPIBDSegmentTypeName(typeId.GetSegmentType()),
+				typeId.GetIdentifier().GetHeight(),
+				typeId.GetIdentifier().GetIndex(),
+				hedgeDelaySecs));
 		}
 	}
 
 	if (!requestsToSend.empty()) {
+		const BlockHeader& archiveHeader = m_pDesegmenter->GetArchiveHeader();
 		LOG_DEBUG(StringUtil::Format(
-			"Requesting {} PIBD segment(s) across {} peer(s) (pending={}, budget={}).",
+			"Requesting {} PIBD segment(s) across {} peer(s) (pending={}, budget={}, archive_height={}, archive_hash={}).",
 			requestsToSend.size(),
-			peers.size(),
+			requestPeers.size(),
 			pendingCount,
-			requestBudget));
+			requestBudget,
+			archiveHeader.GetHeight(),
+			archiveHeader.GetHash()));
 	}
 
-	// Distribute requests round-robin across all available PIBD peers
-	size_t peerIdx = 0;
+	// Distribute requests round-robin across all available PIBD peers, keeping
+	// rotation state across calls so the head segment does not always hit peer 0.
+	size_t peerIdx = m_pibdNextPeerIndex % requestPeers.size();
 	for (const SegmentTypeIdentifier& typeId : requestsToSend) {
+		const bool retryRequest = std::any_of(
+			retryRequests.begin(),
+			retryRequests.end(),
+			[&typeId](const SegmentTypeIdentifier& retryTypeId) { return retryTypeId == typeId; });
+		const std::optional<SegmentRequestTracker::PendingRequest> previousRequest = retryRequest
+			? m_segmentRequests.GetPendingRequest(typeId)
+			: std::nullopt;
+
 		std::unique_ptr<IMessage> pMessage;
 		switch (typeId.GetSegmentType())
 		{
@@ -726,16 +834,28 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 
 		// Try peers starting from peerIdx, advance on success
 		bool sent = false;
-		for (size_t attempt = 0; attempt < peers.size(); ++attempt) {
-			const PeerConstPtr& pCurrentPeer = peers[(peerIdx + attempt) % peers.size()];
+		for (size_t attempt = 0; attempt < requestPeers.size(); ++attempt) {
+			const PeerConstPtr& pCurrentPeer = requestPeers[(peerIdx + attempt) % requestPeers.size()];
+			if (previousRequest.has_value()
+				&& requestPeers.size() > 1
+				&& previousRequest->peerId == pCurrentPeer->GetIPAddress().Format()) {
+				continue;
+			}
+
 			if (pConnectionManager->SendMessageToPeer(*pMessage, pCurrentPeer)) {
 				m_segmentRequests.AddOrRefresh(typeId, pCurrentPeer->GetIPAddress().Format());
-				LOG_DEBUG(StringUtil::Format("Requested PIBD {} segment {}:{} from {}.",
+				const BlockHeader& archiveHeader = m_pDesegmenter->GetArchiveHeader();
+				const uint64_t peerHeight = GetPeerReportedHeight(pConnectionManager, pCurrentPeer);
+				LOG_DEBUG(StringUtil::Format("Requested PIBD {} segment {}:{} for archive {}:{} from {} (peer_height={}).",
 					GetPIBDSegmentTypeName(typeId.GetSegmentType()),
 					typeId.GetIdentifier().GetHeight(),
 					typeId.GetIdentifier().GetIndex(),
-					pCurrentPeer));
-				peerIdx = (peerIdx + attempt + 1) % peers.size();
+					archiveHeader.GetHeight(),
+					archiveHeader.GetHash(),
+					pCurrentPeer,
+					peerHeight));
+				peerIdx = (peerIdx + attempt + 1) % requestPeers.size();
+				m_pibdNextPeerIndex = peerIdx;
 				sent = true;
 				break;
 			}
@@ -761,23 +881,36 @@ void TxHashSetPipe::UpdatePIBDStatus(const bool aborted, const bool errored)
 
 	const uint64_t completedLeaves = m_pDesegmenter->GetCompletedLeaves();
 	const uint64_t leavesRequired = m_pDesegmenter->GetLeavesRequired();
-	const uint64_t completedToHeight = GetPIBDCompletedToHeight();
 	const uint64_t requiredHeight = m_pDesegmenter->GetRequiredHeight();
+	const bool complete = completedLeaves >= leavesRequired && leavesRequired > 0;
+	const auto now = std::chrono::steady_clock::now();
+	const bool heightCalcUninitialized = m_lastPIBDStatusHeightCalcLeaves == std::numeric_limits<uint64_t>::max();
+	const bool enoughLeavesApplied = !heightCalcUninitialized
+		&& completedLeaves >= m_lastPIBDStatusHeightCalcLeaves + PIBD::PIBD_STATUS_UPDATE_LEAF_DELTA;
+	const bool enoughTimePassed = m_lastPIBDStatusHeightCalcTime.time_since_epoch().count() == 0
+		|| std::chrono::duration_cast<std::chrono::seconds>(now - m_lastPIBDStatusHeightCalcTime).count() >= PIBD::PIBD_STATUS_UPDATE_INTERVAL_SECS;
+	const bool refreshHeight = aborted || errored || complete || heightCalcUninitialized || enoughLeavesApplied || enoughTimePassed;
+
+	if (refreshHeight) {
+		m_cachedPIBDCompletedToHeight = GetPIBDCompletedToHeight();
+		m_lastPIBDStatusHeightCalcLeaves = completedLeaves;
+		m_lastPIBDStatusHeightCalcTime = now;
+	}
 
 	m_pSyncStatus->UpdatePIBDStatus(
 		aborted,
 		errored,
 		completedLeaves,
 		leavesRequired,
-		completedToHeight,
+		m_cachedPIBDCompletedToHeight,
 		requiredHeight);
 
-	if (aborted || errored || completedLeaves != m_lastLoggedPIBDCompletedLeaves) {
+	if ((aborted || errored || refreshHeight || complete) && completedLeaves != m_lastLoggedPIBDCompletedLeaves) {
 		LOG_DEBUG(StringUtil::Format(
 			"PIBD progress: {}/{} txhashset leaves, complete_height {}/{} (aborted={}, errored={}).",
 			completedLeaves,
 			leavesRequired,
-			completedToHeight,
+			m_cachedPIBDCompletedToHeight,
 			requiredHeight,
 			aborted,
 			errored));
@@ -839,17 +972,43 @@ uint64_t TxHashSetPipe::GetPIBDCompletedToHeight() const
 void TxHashSetPipe::ClearPIBDRequests()
 {
 	std::lock_guard<std::mutex> lock(m_pibdMutex);
+	if (m_uncommittedPIBDSegments > 0) {
+		auto txHashSetWriter = m_pTxHashSetManager->Write();
+		auto pTxHashSet = txHashSetWriter->GetTxHashSet();
+		if (pTxHashSet != nullptr) {
+			pTxHashSet->Commit();
+			LOG_DEBUG(StringUtil::Format("Committed {} applied PIBD segment(s) before clearing requests.", m_uncommittedPIBDSegments));
+		}
+	}
 	m_segmentRequests = SegmentRequestTracker();
+	m_pibdNextPeerIndex = 0;
+	m_uncommittedPIBDSegments = 0;
+	m_cachedPIBDCompletedToHeight = 0;
+	m_lastPIBDStatusHeightCalcLeaves = std::numeric_limits<uint64_t>::max();
+	m_lastPIBDStatusHeightCalcTime = {};
 }
 
 void TxHashSetPipe::AbortPIBD()
 {
 	std::lock_guard<std::mutex> lock(m_pibdMutex);
+	if (m_uncommittedPIBDSegments > 0) {
+		auto txHashSetWriter = m_pTxHashSetManager->Write();
+		auto pTxHashSet = txHashSetWriter->GetTxHashSet();
+		if (pTxHashSet != nullptr) {
+			pTxHashSet->Commit();
+			LOG_DEBUG(StringUtil::Format("Committed {} applied PIBD segment(s) before abort.", m_uncommittedPIBDSegments));
+		}
+	}
 	UpdatePIBDStatus(true, false);
 	m_pDesegmenter.reset();
 	m_pibdBlockHash.reset();
 	m_segmentRequests = SegmentRequestTracker();
 	m_lastLoggedPIBDCompletedLeaves = std::numeric_limits<uint64_t>::max();
+	m_cachedPIBDCompletedToHeight = 0;
+	m_lastPIBDStatusHeightCalcLeaves = std::numeric_limits<uint64_t>::max();
+	m_lastPIBDStatusHeightCalcTime = {};
+	m_pibdNextPeerIndex = 0;
+	m_uncommittedPIBDSegments = 0;
 	m_processing = false;
 }
 
@@ -894,7 +1053,7 @@ void TxHashSetPipe::Thread_SendTxHashSet(
 		pConnection->SendSync(TxHashSetArchiveMessage{ pHeader->GetHash(), pHeader->GetHeight(), fileSize });
 
 		std::vector<uint8_t> buffer(BUFFER_SIZE, 0);
-			
+
 		while (file.read((char*)buffer.data(), BUFFER_SIZE)) {
 			std::vector<uint8_t> bytesToSend(
 				buffer.cbegin(),

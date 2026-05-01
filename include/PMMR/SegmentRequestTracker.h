@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class SegmentRequestTracker
@@ -16,7 +17,8 @@ public:
 	{
 		SegmentTypeIdentifier segment;
 		std::string peerId;
-		std::chrono::steady_clock::time_point requestedAt;
+		std::chrono::steady_clock::time_point firstRequestedAt;
+		std::chrono::steady_clock::time_point lastRequestedAt;
 		uint32_t attempts;
 	};
 
@@ -38,6 +40,30 @@ public:
 			});
 	}
 
+	std::optional<PendingRequest> GetPendingRequest(const SegmentTypeIdentifier& segment) const
+	{
+		auto iter = std::find_if(
+			m_pending.begin(),
+			m_pending.end(),
+			[&segment](const PendingRequest& request) { return request.segment == segment; });
+		if (iter == m_pending.end()) {
+			return std::nullopt;
+		}
+
+		return *iter;
+	}
+
+	bool CanRetry(const SegmentTypeIdentifier& segment, const std::chrono::seconds retryAfter) const
+	{
+		const std::optional<PendingRequest> request = GetPendingRequest(segment);
+		return request.has_value() && std::chrono::steady_clock::now() - request->lastRequestedAt >= retryAfter;
+	}
+
+	bool CanHedge(const SegmentTypeIdentifier& segment, const std::chrono::seconds hedgeAfter) const
+	{
+		return CanRetry(segment, hedgeAfter);
+	}
+
 	void AddOrRefresh(const SegmentTypeIdentifier& segment, std::string peerId)
 	{
 		const auto now = std::chrono::steady_clock::now();
@@ -46,10 +72,10 @@ public:
 			m_pending.end(),
 			[&segment](const PendingRequest& request) { return request.segment == segment; });
 		if (iter == m_pending.end()) {
-			m_pending.push_back(PendingRequest{ segment, std::move(peerId), now, 1 });
+			m_pending.push_back(PendingRequest{ segment, std::move(peerId), now, now, 1 });
 		} else {
 			iter->peerId = std::move(peerId);
-			iter->requestedAt = now;
+			iter->lastRequestedAt = now;
 			++iter->attempts;
 		}
 	}
@@ -70,7 +96,7 @@ public:
 		const auto now = std::chrono::steady_clock::now();
 		std::vector<PendingRequest> timedOut;
 		for (const PendingRequest& request : m_pending) {
-			if (now - request.requestedAt >= timeout) {
+			if (now - request.firstRequestedAt >= timeout) {
 				timedOut.push_back(request);
 			}
 		}
@@ -86,7 +112,7 @@ public:
 			std::remove_if(
 				m_pending.begin(),
 				m_pending.end(),
-				[now, timeout](const PendingRequest& request) { return now - request.requestedAt >= timeout; }),
+				[now, timeout](const PendingRequest& request) { return now - request.firstRequestedAt >= timeout; }),
 			m_pending.end());
 	}
 

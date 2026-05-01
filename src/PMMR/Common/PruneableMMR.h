@@ -288,7 +288,6 @@ private:
 	{
 		m_pHashFile->AddData(hash);
 		m_pPruneList->AddPrunedRoot(Index::At(position));
-		m_pPruneList->RebuildCaches();
 
 		uint64_t currentPosition = position;
 		Hash currentHash = hash;

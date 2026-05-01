@@ -47,6 +47,8 @@ private:
 
 	void BuildPrunedCache();
 	void BuildShiftCaches();
+	void AddRootToPrunedCache(const Index& mmrIndex);
+	void AppendRootToShiftCaches(const Index& mmrIndex);
 
 	fs::path m_filePath;
 

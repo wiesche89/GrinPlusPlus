@@ -91,8 +91,24 @@ void PruneList::Add(const Index& position)
 
 void PruneList::AddPrunedRoot(const Index& mmrIndex)
 {
+    const uint64_t wirePos = mmrIndex.GetPosition() + 1;
+    if (m_prunedRoots.contains(wirePos)) {
+        return;
+    }
+
+    const bool appendOnly = m_prunedRoots.isEmpty() || wirePos > m_prunedRoots.maximum();
     m_dirty = true;
-    m_prunedRoots.add(mmrIndex.GetPosition() + 1);
+    m_prunedRoots.add(wirePos);
+
+    if (appendOnly) {
+        AddRootToPrunedCache(mmrIndex);
+        AppendRootToShiftCaches(mmrIndex);
+    } else {
+        // PIBD applies segments in order, so this should be rare. Keep this
+        // path correct if a future caller imports roots out of order.
+        BuildPrunedCache();
+        BuildShiftCaches();
+    }
 }
 
 void PruneList::RebuildCaches()
@@ -176,13 +192,7 @@ void PruneList::BuildPrunedCache()
     m_prunedCache = Roaring(roaring_bitmap_create_with_capacity(maximum));
 
     for (const uint64_t rootWirePos : m_prunedRoots) {
-        const uint64_t rootPos = rootWirePos - 1;
-        const uint64_t height = Index::At(rootPos).GetHeight();
-        const uint64_t nodeCount = (1ULL << (height + 1)) - 1;
-        const uint64_t firstPos = rootPos + 1 - nodeCount;
-        for (uint64_t pos = firstPos; pos <= rootPos; ++pos) {
-            m_prunedCache.add(pos + 1);
-        }
+        AddRootToPrunedCache(Index::At(rootWirePos - 1));
     }
 
     m_prunedCache.runOptimize();
@@ -200,12 +210,32 @@ void PruneList::BuildShiftCaches()
     uint64_t totalShift = 0;
     uint64_t totalLeafShift = 0;
     for (const uint64_t rootWirePos : m_prunedRoots) {
-        const uint64_t height = Index::At(rootWirePos - 1).GetHeight();
-
+        const Index rootIndex = Index::At(rootWirePos - 1);
+        const uint64_t height = rootIndex.GetHeight();
         totalShift += 2ULL * ((1ULL << height) - 1);
-        m_shiftCache.push_back(totalShift);
-
         totalLeafShift += (height == 0) ? 0 : 1ULL << height;
+        m_shiftCache.push_back(totalShift);
         m_leafShiftCache.push_back(totalLeafShift);
     }
+}
+
+void PruneList::AddRootToPrunedCache(const Index& mmrIndex)
+{
+    const uint64_t rootPos = mmrIndex.GetPosition();
+    const uint64_t height = mmrIndex.GetHeight();
+    const uint64_t nodeCount = (1ULL << (height + 1)) - 1;
+    const uint64_t firstPos = rootPos + 1 - nodeCount;
+    for (uint64_t pos = firstPos; pos <= rootPos; ++pos) {
+        m_prunedCache.add(pos + 1);
+    }
+}
+
+void PruneList::AppendRootToShiftCaches(const Index& mmrIndex)
+{
+    const uint64_t height = mmrIndex.GetHeight();
+    const uint64_t previousShift = m_shiftCache.empty() ? 0 : m_shiftCache.back();
+    const uint64_t previousLeafShift = m_leafShiftCache.empty() ? 0 : m_leafShiftCache.back();
+
+    m_shiftCache.push_back(previousShift + (2ULL * ((1ULL << height) - 1)));
+    m_leafShiftCache.push_back(previousLeafShift + ((height == 0) ? 0 : 1ULL << height));
 }

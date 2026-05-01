@@ -30,6 +30,8 @@ public:
 		m_lastPIBDProgressLeaves = std::numeric_limits<uint64_t>::max();
 		m_pibdNoPeerSince = std::chrono::steady_clock::now();
 		m_pibdNoPeerSinceSet = false;
+		m_pibdFirstEligibleSince = std::chrono::steady_clock::now();
+		m_pibdFirstEligibleSinceSet = false;
 		m_lastLoggedPIBDPeerCount = 0;
 		m_lastLoggedPIBDPeerLimit = 0;
 	}
@@ -50,6 +52,8 @@ private:
 	uint64_t m_lastPIBDProgressLeaves;
 	std::chrono::steady_clock::time_point m_pibdNoPeerSince;
 	bool m_pibdNoPeerSinceSet;
+	std::chrono::steady_clock::time_point m_pibdFirstEligibleSince;
+	bool m_pibdFirstEligibleSinceSet;
 	size_t m_lastLoggedPIBDPeerCount;
 	size_t m_lastLoggedPIBDPeerLimit;
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_blockedPIBDPeers;

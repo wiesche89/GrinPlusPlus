@@ -102,6 +102,8 @@ std::unique_ptr<BlockSums> TxHashSet::ValidateTxHashSet(const BlockHeader& heade
 
 bool TxHashSet::ApplyBlock(std::shared_ptr<IBlockDB> pBlockDB, const FullBlock& block)
 {
+	InvalidateOutputBitmapCache();
+
 	// Validate inputs
 	const uint64_t maximumBlockHeight = Consensus::GetMaxCoinbaseHeight(block.GetHeight());
 
@@ -346,6 +348,8 @@ bool TxHashSet::ValidateRoots(const BlockHeader& blockHeader) const
 
 TxHashSetRoots TxHashSet::GetRoots(const std::shared_ptr<const IBlockDB>& pBlockDB, const TransactionBody& body)
 {
+	InvalidateOutputBitmapCache();
+
 	for (const auto& kernel : body.GetKernels()) {
 		m_pKernelMMR->ApplyKernel(kernel);
 	}
@@ -424,7 +428,42 @@ std::vector<Hash> TxHashSet::GetLastRangeProofHashes(const uint64_t numberOfRang
 
 std::optional<BitmapSegment> TxHashSet::GetOutputBitmapSegment(const SegmentIdentifier& identifier) const
 {
-	return TxHashSetSegmenter(*this).OutputBitmapSegment(identifier);
+	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
+	BuildOutputBitmapCache();
+	return TxHashSetSegmenter::OutputBitmapSegment(identifier, m_outputBitmapCache.value());
+}
+
+void TxHashSet::BuildOutputBitmapCache() const
+{
+	const uint64_t outputMMRSize = m_pOutputPMMR->GetSize();
+	if (m_outputBitmapCache.has_value() && m_outputBitmapCacheOutputMMRSize == outputMMRSize) {
+		return;
+	}
+
+	BitmapAccumulator accumulator;
+	const uint64_t outputLeaves = MMRUtil::CountLeaves(outputMMRSize);
+	const uint64_t chunkCount = (outputLeaves + BitmapChunk::LEN_BITS - 1) / BitmapChunk::LEN_BITS;
+	for (uint64_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
+		BitmapChunk chunk;
+		const uint64_t firstLeaf = chunkIdx * BitmapChunk::LEN_BITS;
+		const uint64_t lastLeaf = (std::min)(outputLeaves, firstLeaf + BitmapChunk::LEN_BITS);
+		for (uint64_t leafIdx = firstLeaf; leafIdx < lastLeaf; ++leafIdx) {
+			if (m_pOutputPMMR->IsUnpruned(LeafIndex::At(leafIdx))) {
+				chunk.Set(leafIdx - firstLeaf, true);
+			}
+		}
+		accumulator.AppendChunk(std::move(chunk));
+	}
+
+	m_outputBitmapCacheOutputMMRSize = outputMMRSize;
+	m_outputBitmapCache = std::move(accumulator);
+}
+
+void TxHashSet::InvalidateOutputBitmapCache() const
+{
+	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
+	m_outputBitmapCache.reset();
+	m_outputBitmapCacheOutputMMRSize = 0;
 }
 
 uint64_t TxHashSet::GetOutputMMRSize() const
@@ -464,6 +503,7 @@ std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> TxHashSet::Get
 
 bool TxHashSet::ApplyOutputSegment(const Segment<OUTPUT_SIZE, OutputIdentifier>& segment, const uint64_t targetMMRSize)
 {
+	InvalidateOutputBitmapCache();
 	return m_pOutputPMMR->ApplySegment(segment, targetMMRSize);
 }
 
@@ -484,6 +524,7 @@ bool TxHashSet::ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>
 
 void TxHashSet::UpdateLeafSets(const BitmapAccumulator& outputBitmap, const uint64_t numOutputs)
 {
+	InvalidateOutputBitmapCache();
 	m_pOutputPMMR->UpdateLeafSet(outputBitmap, numOutputs);
 	m_pRangeProofPMMR->UpdateLeafSet(outputBitmap, numOutputs);
 }
@@ -556,6 +597,8 @@ OutputDTO TxHashSet::GetOutput(const OutputLocation& location) const
 
 void TxHashSet::Rewind(std::shared_ptr<IBlockDB> pBlockDB, const BlockHeader& header)
 {
+	InvalidateOutputBitmapCache();
+
 	std::vector<uint64_t> leavesToAdd;
 	while (*m_pBlockHeader != header) {
 		auto pBlock = pBlockDB->GetBlock(m_pBlockHeader->GetHash());
@@ -598,6 +641,7 @@ void TxHashSet::Commit()
 
 void TxHashSet::Rollback() noexcept
 {
+	InvalidateOutputBitmapCache();
 	m_pKernelMMR->Rollback();
 	m_pOutputPMMR->Rollback();
 	m_pRangeProofPMMR->Rollback();
@@ -606,6 +650,7 @@ void TxHashSet::Rollback() noexcept
 
 void TxHashSet::Compact()
 {
+	InvalidateOutputBitmapCache();
 	LOG_INFO("Compacting TxHashSet");
 
 	// Ensure any pending changes are flushed so compaction runs on consistent data.

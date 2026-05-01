@@ -61,11 +61,10 @@ public:
 
 	std::optional<BitmapSegment> OutputBitmapSegment(const SegmentIdentifier& identifier) const
 	{
+		BitmapAccumulator accumulator;
 		const uint64_t outputMMRSize = m_pTxHashSet->GetOutputPMMR()->GetSize();
 		const uint64_t outputLeaves = MMRUtil::CountLeaves(outputMMRSize);
 		const uint64_t chunkCount = (outputLeaves + BitmapChunk::LEN_BITS - 1) / BitmapChunk::LEN_BITS;
-
-		BitmapAccumulator accumulator;
 		for (uint64_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
 			BitmapChunk chunk;
 			const uint64_t firstLeaf = chunkIdx * BitmapChunk::LEN_BITS;
@@ -78,6 +77,11 @@ public:
 			accumulator.AppendChunk(std::move(chunk));
 		}
 
+		return OutputBitmapSegment(identifier, accumulator);
+	}
+
+	static std::optional<BitmapSegment> OutputBitmapSegment(const SegmentIdentifier& identifier, const BitmapAccumulator& accumulator)
+	{
 		const uint64_t bitmapMMRSize = accumulator.GetMMRSize();
 		if (identifier.GetSegmentUnprunedSize(bitmapMMRSize) == 0) {
 			return std::nullopt;

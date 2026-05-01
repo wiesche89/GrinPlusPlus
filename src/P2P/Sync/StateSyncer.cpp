@@ -11,6 +11,27 @@
 
 static constexpr std::chrono::minutes PIBD_STALLED_PEER_BACKOFF(10);
 
+static uint64_t GetPIBDMinPeerHeight(const uint64_t, const uint64_t archiveHeight)
+{
+	return archiveHeight;
+}
+
+static uint64_t GetConnectedPeerHeight(const std::vector<ConnectedPeer>& connectedPeers, const PeerConstPtr& pPeer)
+{
+	if (pPeer == nullptr) {
+		return 0;
+	}
+
+	const std::string peerAddress = pPeer->GetIPAddress().Format();
+	for (const ConnectedPeer& connectedPeer : connectedPeers) {
+		if (connectedPeer.GetPeer() != nullptr && connectedPeer.GetIPAddress().Format() == peerAddress) {
+			return connectedPeer.GetHeight();
+		}
+	}
+
+	return 0;
+}
+
 bool StateSyncer::SyncState(SyncStatus& syncStatus)
 {
 	if (syncStatus.GetStatus() == ESyncStatus::SYNCING_TXHASHSET_PIBD)
@@ -147,6 +168,25 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			m_pPipeline->ClearPIBDRequests();
 			m_pPeer = nullptr;
 		} else {
+			const uint64_t headerHeight = syncStatus.GetHeaderHeight();
+			const uint64_t archiveHeight = m_requestedHeight != 0
+				? m_requestedHeight
+				: Consensus::GetTxHashSetArchiveHeight(headerHeight);
+			const uint64_t minPeerHeight = GetPIBDMinPeerHeight(headerHeight, archiveHeight);
+			const uint64_t peerHeight = GetConnectedPeerHeight(pConnectionManager->GetConnectedPeers(), m_pPeer);
+			if (peerHeight < minPeerHeight) {
+				LOG_WARNING(StringUtil::Format(
+					"PIBD peer {} is behind required height (peer_height={}, min_height={}, archive_height={}, header_height={}), selecting a new peer.",
+					m_pPeer,
+					peerHeight,
+					minPeerHeight,
+					archiveHeight,
+					headerHeight));
+				m_pPipeline->ClearPIBDRequests();
+				m_pPeer = nullptr;
+				return RequestPIBDState(syncStatus);
+			}
+
 			// Detect stall: peer connected but no PIBD progress
 			const uint64_t currentLeaves = syncStatus.GetPIBDCompletedLeaves();
 			if (m_lastPIBDProgressLeaves == std::numeric_limits<uint64_t>::max()
@@ -162,10 +202,6 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 					LOG_WARNING(StringUtil::Format(
 						"PIBD stalled with peer {} for {}s (threshold={}s), switching peer.",
 						m_pPeer, stallSecs, stallThreshold));
-					const uint64_t headerHeight = syncStatus.GetHeaderHeight();
-					const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-						? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-						: 0;
 					bool hasAlternativePIBDPeer = false;
 					for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
 						if (cp.GetPeer() != nullptr
@@ -197,9 +233,10 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			activePibdPeers.push_back(m_pPeer);
 
 			const uint64_t headerHeight = syncStatus.GetHeaderHeight();
-			const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-				? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-				: 0;
+			const uint64_t archiveHeight = m_requestedHeight != 0
+				? m_requestedHeight
+				: Consensus::GetTxHashSetArchiveHeight(headerHeight);
+			const uint64_t minPeerHeight = GetPIBDMinPeerHeight(headerHeight, archiveHeight);
 			for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
 				if (cp.GetPeer() != nullptr
 					&& cp.GetPeer() != m_pPeer
@@ -211,8 +248,8 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			}
 
 			const size_t eligiblePibdPeerCount = activePibdPeers.size();
-			if (activePibdPeers.size() > PIBD::SEGMENT_REQUEST_COUNT) {
-				activePibdPeers.resize(PIBD::SEGMENT_REQUEST_COUNT);
+			if (activePibdPeers.size() > PIBD::PIBD_MAX_PARALLEL_PEERS) {
+				activePibdPeers.resize(PIBD::PIBD_MAX_PARALLEL_PEERS);
 			}
 
 			if (eligiblePibdPeerCount > 1
@@ -253,9 +290,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 	}
 
 	std::vector<ConnectedPeer> connectedPeers = pConnectionManager->GetConnectedPeers();
-	const uint64_t minPeerHeight = headerHeight > PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-		? headerHeight - PIBD::PIBD_PEER_HEIGHT_SLACK_BLOCKS
-		: 0;
+	const uint64_t minPeerHeight = GetPIBDMinPeerHeight(headerHeight, requestedHeight);
 
 	const auto now = std::chrono::steady_clock::now();
 	for (auto iter = m_blockedPIBDPeers.begin(); iter != m_blockedPIBDPeers.end(); ) {
@@ -284,6 +319,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			m_pibdNoPeerSince = std::chrono::steady_clock::now();
 			m_pibdNoPeerSinceSet = true;
 		}
+		m_pibdFirstEligibleSinceSet = false;
 		const auto noPeerSecs = std::chrono::duration_cast<std::chrono::seconds>(
 			std::chrono::steady_clock::now() - m_pibdNoPeerSince).count();
 		const int64_t noPeerThreshold = 300; // 5 minutes
@@ -298,14 +334,45 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			m_lastPIBDProgressLeaves = std::numeric_limits<uint64_t>::max();
 		} else {
 			LOG_DEBUG(StringUtil::Format(
-				"No eligible PIBD_HIST_1 peer found. connected={}, min_height={}, no_peer_for={}s.",
-				connectedPeers.size(), minPeerHeight, noPeerSecs));
+				"No eligible PIBD_HIST_1 peer found. connected={}, min_height={}, archive_height={}, header_height={}, no_peer_for={}s.",
+				connectedPeers.size(), minPeerHeight, requestedHeight, headerHeight, noPeerSecs));
 		}
 		return false;
 	}
 
 	// Found at least one eligible peer - reset no-peer timer
 	m_pibdNoPeerSinceSet = false;
+
+	const size_t startMinPeers = (std::min)(
+		static_cast<size_t>(PIBD::PIBD_START_MIN_PEERS),
+		static_cast<size_t>(PIBD::PIBD_MAX_PARALLEL_PEERS));
+	if (m_requestedHeight == 0 && pibdPeers.size() < startMinPeers) {
+		if (!m_pibdFirstEligibleSinceSet) {
+			m_pibdFirstEligibleSince = std::chrono::steady_clock::now();
+			m_pibdFirstEligibleSinceSet = true;
+		}
+
+		const auto firstEligibleSecs = std::chrono::duration_cast<std::chrono::seconds>(
+			std::chrono::steady_clock::now() - m_pibdFirstEligibleSince).count();
+		if (firstEligibleSecs < PIBD::PIBD_START_GRACE_SECS) {
+			LOG_DEBUG(StringUtil::Format(
+				"Waiting briefly for more PIBD peers before starting. eligible={}, wanted={}, grace={}s/{}s, archive_height={}, min_height={}.",
+				pibdPeers.size(),
+				startMinPeers,
+				firstEligibleSecs,
+				PIBD::PIBD_START_GRACE_SECS,
+				requestedHeight,
+				minPeerHeight));
+			syncStatus.UpdateStatus(ESyncStatus::SYNCING_TXHASHSET_PIBD);
+			return true;
+		}
+
+		LOG_WARNING(StringUtil::Format(
+			"Starting PIBD with only {} eligible peer(s) after waiting {}s.",
+			pibdPeers.size(),
+			firstEligibleSecs));
+	}
+	m_pibdFirstEligibleSinceSet = false;
 
 	std::sort(
 		pibdPeers.begin(),
@@ -336,14 +403,17 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 	for (ConnectedPeer* cp : pibdPeers) {
 		pibdPeerList.push_back(cp->GetPeer());
 	}
-	if (pibdPeerList.size() > PIBD::SEGMENT_REQUEST_COUNT) {
-		pibdPeerList.resize(PIBD::SEGMENT_REQUEST_COUNT);
+	if (pibdPeerList.size() > PIBD::PIBD_MAX_PARALLEL_PEERS) {
+		pibdPeerList.resize(PIBD::PIBD_MAX_PARALLEL_PEERS);
 	}
 
 	LOG_INFO(StringUtil::Format(
-		"Selected {} eligible PIBD peer(s), using {} peer(s), primary: {} height={} difficulty={}.",
+		"Selected {} eligible PIBD peer(s), using {} peer(s), archive_height={}, archive_hash={}, min_height={}, primary: {} height={} difficulty={}.",
 		pibdPeers.size(),
 		pibdPeerList.size(),
+		requestedHeight,
+		pHeader->GetHash(),
+		minPeerHeight,
 		m_pPeer,
 		pSelectedPeer->GetHeight(),
 		pSelectedPeer->GetTotalDifficulty()));
