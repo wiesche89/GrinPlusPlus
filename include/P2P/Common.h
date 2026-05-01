@@ -24,6 +24,9 @@ namespace P2P
 	// Maximum number of block headers a peer should ever send
 	static const uint32_t MAX_BLOCK_HEADERS = 512;
 
+	// Header segment height for PIHD. 2^9 == MAX_BLOCK_HEADERS.
+	static const uint8_t PIHD_HEADER_SEGMENT_HEIGHT = 9;
+
 	// Maximum number of block bodies a peer should ever ask for and send
 	static const uint32_t MAX_BLOCK_BODIES = 16;
 

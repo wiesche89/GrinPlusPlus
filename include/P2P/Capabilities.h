@@ -29,8 +29,12 @@ public:
 		// PIBD with the serialization fix used by current grin rust.
 		PIBD_HIST_1 = 0x40,
 
+		// Can provide block header ranges by segment for parallel initial header download.
+		PIHD_HIST = 0x80,
+
 		FAST_SYNC_NODE = (TXHASHET_HIST | PEER_LIST),
 		PIBD_FAST_SYNC_NODE = (FAST_SYNC_NODE | PIBD_HIST_1),
+		PIHD_FAST_SYNC_NODE = (PIBD_FAST_SYNC_NODE | PIHD_HIST),
 
 		ARCHIVE_NODE = (FULL_HIST | TXHASHET_HIST | PEER_LIST)
 	};

@@ -36,7 +36,9 @@ namespace MessageTypes
         GetRangeProofSegment = 25,
         RangeProofSegment = 26,
         GetKernelSegment = 27,
-        KernelSegment = 28
+        KernelSegment = 28,
+        GetHeaderSegment = 29,
+        HeaderSegment = 30
     };
 
     static uint64_t GetMaximumSize(const EMessageType messageType)
@@ -90,11 +92,15 @@ namespace MessageTypes
             case GetRangeProofSegment:
             case GetKernelSegment:
                 return 41;
+            case GetHeaderSegment:
+                return 9;
             case OutputBitmapSegment:
             case OutputSegment:
             case RangeProofSegment:
             case KernelSegment:
                 return 2 * P2P::MAX_BLOCK_SIZE;
+            case HeaderSegment:
+                return 11 + 365 * ((uint64_t)P2P::MAX_BLOCK_HEADERS);
         }
 
         return 0;
@@ -162,6 +168,10 @@ namespace MessageTypes
                 return "Msg::GetKernelSegment";
             case KernelSegment:
                 return "Msg::KernelSegment";
+            case GetHeaderSegment:
+                return "Msg::GetHeaderSegment";
+            case HeaderSegment:
+                return "Msg::HeaderSegment";
         }
 
         return "UNKNOWN";

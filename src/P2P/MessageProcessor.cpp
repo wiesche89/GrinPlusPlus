@@ -1,6 +1,7 @@
 #include "MessageProcessor.h"
 #include "BlockLocator.h"
 #include "ConnectionManager.h"
+#include "HeaderBatchCache.h"
 #include "Pipeline/Pipeline.h"
 
 // Network Messages
@@ -15,6 +16,7 @@
 #include "Messages/GetHeadersMessage.h"
 #include "Messages/HeaderMessage.h"
 #include "Messages/HeadersMessage.h"
+#include "Messages/HeaderSegmentMessage.h"
 #include "Messages/BlockMessage.h"
 #include "Messages/GetBlockMessage.h"
 #include "Messages/CompactBlockMessage.h"
@@ -229,17 +231,72 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         }
         case Headers:
         {
-            const HeadersMessage headersMessage = HeadersMessage::Deserialize(byteBuffer);
-            const std::vector<BlockHeaderPtr>& blockHeaders = headersMessage.GetHeaders();
+            HeadersMessage headersMessage = HeadersMessage::Deserialize(byteBuffer);
+            std::vector<BlockHeaderPtr> blockHeaders = headersMessage.GetHeaders();
 
             LOG_TRACE_F("{} headers received from {}", blockHeaders.size(), pConnection);
 
-            const EBlockChainStatus status = m_pBlockChain->AddBlockHeaders(blockHeaders);
-            if (status == EBlockChainStatus::INVALID) {
-                pConnection->BanPeer(EBanReason::BadBlockHeader);
-            }
+            HeaderBatchCache::Get().AddHeaders(
+                m_pBlockChain,
+                pConnection,
+                std::move(blockHeaders),
+                HeaderBatchCache::Source::LegacyHeaders);
 
             LOG_TRACE_F("Headers message from {} finished processing", pConnection);
+            break;
+        }
+        case GetHeaderSegment:
+        {
+            const GetHeaderSegmentMessage message = GetHeaderSegmentMessage::Deserialize(byteBuffer);
+            if (!pConnection->GetCapabilities().HasCapability(Capabilities::PIHD_HIST)) {
+                break;
+            }
+
+            const SegmentIdentifier& identifier = message.GetIdentifier();
+            if (identifier.GetHeight() != P2P::PIHD_HEADER_SEGMENT_HEIGHT) {
+                break;
+            }
+
+            const uint64_t startHeight = identifier.GetLeafOffset() + 1;
+            const uint64_t endHeight = (std::min)(
+                startHeight + identifier.GetSegmentCapacity() - 1,
+                m_pBlockChain->GetHeight(EChainType::CANDIDATE));
+
+            std::vector<BlockHeaderPtr> blockHeaders;
+            if (startHeight <= endHeight) {
+                blockHeaders.reserve((size_t)(endHeight - startHeight + 1));
+                for (uint64_t height = startHeight; height <= endHeight; ++height) {
+                    BlockHeaderPtr pHeader = m_pBlockChain->GetBlockHeaderByHeight(height, EChainType::CANDIDATE);
+                    if (pHeader == nullptr) {
+                        break;
+                    }
+
+                    blockHeaders.push_back(pHeader);
+                }
+            }
+
+            LOG_DEBUG_F("Sending PIHD header segment {}:{} ({} headers) to {}.",
+                identifier.GetHeight(),
+                identifier.GetIndex(),
+                blockHeaders.size(),
+                pConnection);
+            pConnection->SendAsync(HeaderSegmentMessage(identifier, std::move(blockHeaders)));
+            break;
+        }
+        case HeaderSegment:
+        {
+            HeaderSegmentMessage message = HeaderSegmentMessage::Deserialize(byteBuffer);
+            std::vector<BlockHeaderPtr> blockHeaders = message.GetHeaders();
+            LOG_TRACE_F("PIHD header segment {}:{} with {} headers received from {}.",
+                message.GetIdentifier().GetHeight(),
+                message.GetIdentifier().GetIndex(),
+                blockHeaders.size(),
+                pConnection);
+            HeaderBatchCache::Get().AddHeaders(
+                m_pBlockChain,
+                pConnection,
+                std::move(blockHeaders),
+                HeaderBatchCache::Source::PIHDSegment);
             break;
         }
         case GetBlock:

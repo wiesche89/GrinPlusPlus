@@ -109,7 +109,7 @@ void HandShake::TransmitHandMessage(const Socket::Ptr& pSocket) const
 
     HandMessage hand(
         P2P::PROTOCOL_VERSION,
-        Capabilities::PIBD_FAST_SYNC_NODE,
+        Capabilities::PIHD_FAST_SYNC_NODE,
         SELF_NONCE,
         Global::GetGenesisHash(),
         m_pSyncStatus->GetBlockDifficulty(),
@@ -127,7 +127,7 @@ void HandShake::TransmitShakeMessage(const Socket::Ptr& pSocket, const uint32_t 
 {
     ShakeMessage shakeMessage(
         protocolVersion,
-        Capabilities::PIBD_FAST_SYNC_NODE,
+        Capabilities::PIHD_FAST_SYNC_NODE,
         Global::GetGenesisHash(),
         m_pSyncStatus->GetBlockDifficulty(),
         P2P::USER_AGENT
