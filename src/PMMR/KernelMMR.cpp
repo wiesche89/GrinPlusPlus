@@ -231,21 +231,25 @@ bool KernelMMR::ApplySegment(const Segment<KERNEL_SIZE, TransactionKernel>& segm
 		return false;
 	}
 
-	const uint64_t firstKernel = GetNumKernels();
+	uint64_t nextKernel = GetNumKernels();
 	for (size_t i = 0; i < segment.GetLeaves().size(); ++i) {
-		const uint64_t expectedPosition = LeafIndex::At(firstKernel + i).GetPosition();
-		if (segment.GetLeafPositions()[i] != expectedPosition) {
+		const uint64_t leafPosition = segment.GetLeafPositions()[i];
+		const uint64_t expectedPosition = LeafIndex::At(nextKernel).GetPosition();
+		if (leafPosition < expectedPosition) {
+			continue;
+		}
+
+		if (leafPosition != expectedPosition) {
 			LOG_WARNING_F("Kernel PIBD segment {}:{} is not contiguous at position {}. Expected {}.",
 				segment.GetIdentifier().GetHeight(),
 				segment.GetIdentifier().GetIndex(),
-				segment.GetLeafPositions()[i],
+				leafPosition,
 				expectedPosition);
 			return false;
 		}
-	}
 
-	for (const TransactionKernel& kernel : segment.GetLeaves()) {
-		ApplyKernel(kernel);
+		ApplyKernel(segment.GetLeaves()[i]);
+		++nextKernel;
 	}
 
 	return true;

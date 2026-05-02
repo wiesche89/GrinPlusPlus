@@ -100,12 +100,11 @@ std::vector<ConnectedPeer> ConnectionManager::GetConnectedPeers() const
 	auto connections = m_connections.Read();
 
 	std::vector<ConnectedPeer> connectedPeers;
-	std::transform(
-		connections->cbegin(),
-		connections->cend(),
-		std::back_inserter(connectedPeers),
-		[](const ConnectionPtr& pConnection) { return pConnection->GetConnectedPeer(); }
-	);
+	for (const ConnectionPtr& pConnection : *connections) {
+		if (pConnection->IsConnectionActive()) {
+			connectedPeers.push_back(pConnection->GetConnectedPeer());
+		}
+	}
 
 	return connectedPeers;
 }
@@ -148,7 +147,7 @@ bool ConnectionManager::SendMessageToPeer(const IMessage& message, PeerConstPtr 
 {
 	auto connections = *m_connections.Read().GetShared();
 	for (auto pConnection : connections) {
-		if (pConnection->GetIPAddress() == pPeer->GetIPAddress()) {
+		if (pConnection->GetIPAddress() == pPeer->GetIPAddress() && pConnection->IsConnectionActive()) {
 			pConnection->SendAsync(message);
 			return true;
 		}
@@ -159,7 +158,7 @@ bool ConnectionManager::SendMessageToPeer(const IMessage& message, PeerConstPtr 
 
 void ConnectionManager::BroadcastMessage(const IMessage& message, const uint64_t sourceId)
 {
-	LOG_DEBUG("Broadcasting message: {}", MessageTypes::ToString(message.GetMessageType()));
+	LOG_TRACE("Broadcasting message: {}", MessageTypes::ToString(message.GetMessageType()));
 
 	// TODO: This should only broadcast to 8(?) peers. Should maybe be configurable.
 	auto connections = *m_connections.Read().GetShared();
@@ -223,7 +222,7 @@ ConnectionPtr ConnectionManager::GetMostWorkPeer(const std::vector<ConnectionPtr
 	uint64_t mostWorkHeight = 0;
 	for (const ConnectionPtr& pConnection : connections)
 	{
-		if (pConnection->GetHeight() == 0)
+		if (pConnection->GetHeight() == 0 || !pConnection->IsConnectionActive())
 		{
 			continue;
 		}

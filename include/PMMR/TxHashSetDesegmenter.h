@@ -661,7 +661,7 @@ private:
 		}
 
 		if (appliedCount > 0) {
-			LOG_DEBUG(StringUtil::Format(
+			LOG_TRACE(StringUtil::Format(
 				"PIBD {} applied {} segment(s) {}:{}..{}:{}, applied_mmr_size {} -> {}.",
 				segmentType,
 				appliedCount,

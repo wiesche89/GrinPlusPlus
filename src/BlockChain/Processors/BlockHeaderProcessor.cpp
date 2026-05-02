@@ -10,7 +10,15 @@
 #include <Common/Util/HexUtil.h>
 #include <Common/Util/StringUtil.h>
 
-static const size_t SYNC_BATCH_SIZE = 128;
+#include <chrono>
+
+static const size_t SYNC_BATCH_SIZE = 512;
+
+static uint64_t MillisecondsSince(const std::chrono::steady_clock::time_point start)
+{
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+}
 
 EBlockChainStatus BlockHeaderProcessor::ProcessSingleHeader(const BlockHeaderPtr& pHeader)
 {
@@ -41,7 +49,7 @@ EBlockChainStatus BlockHeaderProcessor::ProcessSingleHeader(const BlockHeaderPtr
         return ProcessOrphan(pLockedState, pHeader);
     }
 
-    LOG_DEBUG_F("Processing next candidate header: {}", *pHeader);
+    LOG_TRACE_F("Processing next candidate header: {}", *pHeader);
 
     // Validate the header.
     auto pPreviousHeaderPtr = pBlockDB->GetBlockHeader(pCandidateChain->GetTipHash());
@@ -51,7 +59,7 @@ EBlockChainStatus BlockHeaderProcessor::ProcessSingleHeader(const BlockHeaderPtr
     pHeaderMMR->AddHeader(*pHeader);
     pCandidateChain->AddBlock(pHeader->GetHash(), pHeader->GetHeight());
 
-    LOG_DEBUG_F("Successfully validated {}", *pHeader);
+    LOG_TRACE_F("Successfully validated {}", *pHeader);
 
     pLockedState->Commit();
     return EBlockChainStatus::SUCCESS;
@@ -114,6 +122,10 @@ EBlockChainStatus BlockHeaderProcessor::ProcessSyncHeaders(const std::vector<Blo
         return EBlockChainStatus::SUCCESS;
     }
 
+    const auto totalStart = std::chrono::steady_clock::now();
+    const uint64_t firstHeight = headers.front()->GetHeight();
+    const uint64_t lastHeight = headers.back()->GetHeight();
+
     for (const auto& pHeader : headers) {
         if (BAD_BLOCKS.find(pHeader->GetHash()) != BAD_BLOCKS.end()) {
             throw BAD_DATA_EXCEPTION(EBanReason::BadBlockHeader, "Header included in BAD_BLOCKS");
@@ -148,11 +160,19 @@ EBlockChainStatus BlockHeaderProcessor::ProcessSyncHeaders(const std::vector<Blo
         }
     }
 
+    LOG_TRACE(StringUtil::Format(
+        "ProcessSyncHeaders range={}..{} count={} total_ms={}.",
+        firstHeight,
+        lastHeight,
+        headers.size(),
+        MillisecondsSince(totalStart)));
+
     return EBlockChainStatus::SUCCESS;
 }
 
 EBlockChainStatus BlockHeaderProcessor::ProcessChunkedSyncHeaders(const std::vector<BlockHeaderPtr>& headers)
 {
+    const auto totalStart = std::chrono::steady_clock::now();
     auto pLockedState = m_pChainState->BatchWrite();
     auto pHeaderMMR = pLockedState->GetHeaderMMR();
     auto pChainStore = pLockedState->GetChainStore();
@@ -160,9 +180,12 @@ EBlockChainStatus BlockHeaderProcessor::ProcessChunkedSyncHeaders(const std::vec
 
     const uint64_t totalDifficulty = pLockedState->GetTotalDifficulty(EChainType::CANDIDATE);
 
+    const auto prepareStart = std::chrono::steady_clock::now();
     PrepareSyncChain(pLockedState, headers);
+    const uint64_t prepareMs = MillisecondsSince(prepareStart);
 
     // Filter out headers that are already part of sync chain.
+    const auto filterStart = std::chrono::steady_clock::now();
     std::vector<BlockHeaderPtr> newHeaders;
     for (size_t i = 0; i < headers.size(); i++) {
         auto pHeader = headers[i];
@@ -170,6 +193,7 @@ EBlockChainStatus BlockHeaderProcessor::ProcessChunkedSyncHeaders(const std::vec
             newHeaders.push_back(pHeader);
         }
     }
+    const uint64_t filterMs = MillisecondsSince(filterStart);
 
     if (newHeaders.empty()) {
         LOG_DEBUG("Headers already processed.");
@@ -179,11 +203,15 @@ EBlockChainStatus BlockHeaderProcessor::ProcessChunkedSyncHeaders(const std::vec
     LOG_TRACE_F("Processing headers {} to {}.", *newHeaders.front(), *newHeaders.back());
 
     // Rewind MMR
+    const auto rewindStart = std::chrono::steady_clock::now();
     pCandidateChain->Rewind(newHeaders.front()->GetHeight() - 1);
     pHeaderMMR->Rewind(newHeaders.front()->GetHeight());
+    const uint64_t rewindMs = MillisecondsSince(rewindStart);
 
     // Validate the headers.
+    const auto validateStart = std::chrono::steady_clock::now();
     ValidateHeaders(pLockedState, newHeaders);
+    const uint64_t validateMs = MillisecondsSince(validateStart);
 
     // If total difficulty increases, accept sync chain as new candidate chain.
     if (newHeaders.back()->GetTotalDifficulty() <= totalDifficulty) {
@@ -194,7 +222,23 @@ EBlockChainStatus BlockHeaderProcessor::ProcessChunkedSyncHeaders(const std::vec
         pCandidateChain->Rollback();
     }
 
+    const auto commitStart = std::chrono::steady_clock::now();
     pLockedState->Commit();
+    const uint64_t commitMs = MillisecondsSince(commitStart);
+
+    LOG_TRACE(StringUtil::Format(
+        "ProcessChunkedSyncHeaders range={}..{} count={}/{} timings_ms={},{},{},{},{},{}.",
+        newHeaders.front()->GetHeight(),
+        newHeaders.back()->GetHeight(),
+        newHeaders.size(),
+        headers.size(),
+        prepareMs,
+        filterMs,
+        rewindMs,
+        validateMs,
+        commitMs,
+        MillisecondsSince(totalStart)));
+
     return EBlockChainStatus::SUCCESS;
 }
 

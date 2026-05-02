@@ -148,6 +148,10 @@ public:
 		const SegmentIdentifier& identifier
 	) const = 0;
 
+	virtual Hash GetOutputRoot(
+		const uint64_t outputMMRSize
+	) const = 0;
+
 	virtual Hash GetOutputBitmapRoot(
 		const uint64_t numOutputs
 	) const = 0;

@@ -7,10 +7,13 @@
 
 #include <Net/SocketException.h>
 #include <Common/Util/ThreadUtil.h>
+#include <Common/Util/StringUtil.h>
 #include <Common/Logger.h>
 #include <thread>
 #include <chrono>
 #include <memory>
+
+static constexpr size_t MAX_MESSAGES_PER_MINUTE = 6000;
 
 void Connection::Connect()
 {
@@ -51,25 +54,45 @@ bool Connection::IsConnectionActive() const
 
 void Connection::SendAsync(const IMessage& message)
 {
-    if (!m_sendingDisabled) {
-        std::vector<uint8_t> serialized = message.Serialize(GetProtocolVersion());
-        if (message.GetMessageType() != MessageTypes::Ping && message.GetMessageType() != MessageTypes::Pong) {
-            LOG_TRACE_F(
-                "Sending {}b '{}' message to {}",
+    if (m_sendingDisabled) {
+        LOG_DEBUG(StringUtil::Format(
+            "Send disabled; dropping '{}' message to {}.",
+            MessageTypes::ToString(message.GetMessageType()),
+            m_pSocket));
+        return;
+    }
+
+    std::vector<uint8_t> serialized = message.Serialize(GetProtocolVersion());
+    if (message.GetMessageType() != MessageTypes::Ping && message.GetMessageType() != MessageTypes::Pong) {
+        LOG_TRACE(StringUtil::Format(
+            "Sending {}b '{}' message to {}.",
+            serialized.size(),
+            MessageTypes::ToString(message.GetMessageType()),
+            m_pSocket));
+    }
+
+    switch (message.GetMessageType()) {
+        case MessageTypes::OutputBitmapSegment:
+        case MessageTypes::OutputSegment:
+        case MessageTypes::RangeProofSegment:
+        case MessageTypes::KernelSegment:
+            LOG_TRACE(StringUtil::Format(
+                "Queueing {}b '{}' message to {}.",
                 serialized.size(),
                 MessageTypes::ToString(message.GetMessageType()),
-                m_pSocket
-            );
-        }
-
-        m_pSocket->SendAsync(serialized);
+                m_pSocket));
+            break;
+        default:
+            break;
     }
+
+    m_pSocket->SendAsync(serialized);
 }
 
 bool Connection::ExceedsRateLimit() const
 {
-    return m_pSocket->GetRateCounter().GetSentInLastMinute() > 500
-        || m_pSocket->GetRateCounter().GetReceivedInLastMinute() > 500;
+    return m_pSocket->GetRateCounter().GetSentInLastMinute() > MAX_MESSAGES_PER_MINUTE
+        || m_pSocket->GetRateCounter().GetReceivedInLastMinute() > MAX_MESSAGES_PER_MINUTE;
 }
 
 void Connection::Thread_Connect(std::shared_ptr<Connection> pConnection)
@@ -107,7 +130,7 @@ void Connection::Thread_Connect(std::shared_ptr<Connection> pConnection)
         );
     }
     catch (const std::exception& e) {
-        LOG_DEBUG_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e);
+        LOG_TRACE_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e);
     }
 }
 

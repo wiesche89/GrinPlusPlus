@@ -24,10 +24,12 @@
 class Config;
 class IBlockDB;
 class TxHashSetManager;
+class ITxHashSet;
 class ITransactionPool;
 class SyncStatus;
 class FullBlock;
 class CompactBlock;
+using ITxHashSetPtr = std::shared_ptr<ITxHashSet>;
 
 #define BLOCK_CHAIN_API
 
@@ -52,6 +54,7 @@ public:
 	virtual EBlockChainStatus AddCompactBlock(const CompactBlock& compactBlock) = 0;
 
 	virtual fs::path SnapshotTxHashSet(BlockHeaderPtr pBlockHeader) = 0;
+	virtual ITxHashSetPtr CreateTxHashSetSnapshot(BlockHeaderPtr pBlockHeader) = 0;
 	virtual EBlockChainStatus ProcessTransactionHashSet(const Hash& blockHash, const fs::path& path, SyncStatus& syncStatus) = 0;
 	virtual EBlockChainStatus ProcessPIBDTransactionHashSet(const Hash& blockHash, SyncStatus& syncStatus) = 0;
 	virtual EBlockChainStatus AddTransaction(TransactionPtr pTransaction, const EPoolType poolType) = 0;

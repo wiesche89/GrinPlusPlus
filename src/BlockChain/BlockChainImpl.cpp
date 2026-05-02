@@ -184,6 +184,19 @@ fs::path BlockChain::SnapshotTxHashSet(BlockHeaderPtr pBlockHeader)
 	return pBatch->GetTxHashSetManager()->SaveSnapshot(pBatch->GetBlockDB(), pBlockHeader);
 }
 
+ITxHashSetPtr BlockChain::CreateTxHashSetSnapshot(BlockHeaderPtr pBlockHeader)
+{
+	// TODO: Use reader if possible
+	auto pBatch = m_pChainState->BatchWrite(); // DO NOT COMMIT THIS BATCH
+	const uint64_t horizon = Consensus::GetHorizonHeight(pBatch->GetHeight(EChainType::CONFIRMED));
+	if (pBlockHeader->GetHeight() < horizon)
+	{
+		throw BAD_DATA_EXCEPTION(EBanReason::Abusive, "TxHashSet snapshot requested beyond horizon.");
+	}
+
+	return pBatch->GetTxHashSetManager()->CreateSnapshot(pBatch->GetBlockDB(), pBlockHeader);
+}
+
 EBlockChainStatus BlockChain::ProcessTransactionHashSet(const Hash& blockHash, const fs::path& path, SyncStatus& syncStatus)
 {
 	try

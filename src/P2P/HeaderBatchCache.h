@@ -38,6 +38,11 @@ private:
 	HeaderBatchCache() = default;
 
 	void ProcessReadyBatches(const IBlockChain::Ptr& pBlockChain);
+	bool TryAppendContiguousReadyBatches(
+		const IBlockChain::Ptr& pBlockChain,
+		std::vector<BlockHeaderPtr>& headers,
+		Connection::Ptr& pConnection,
+		Source source);
 	bool IsDuplicate(const std::vector<BlockHeaderPtr>& headers) const;
 	bool IsAlreadyOnCandidateChain(const IBlockChain::Ptr& pBlockChain, const std::vector<BlockHeaderPtr>& headers) const;
 	std::vector<BlockHeaderPtr> TrimAlreadyKnownPrefix(

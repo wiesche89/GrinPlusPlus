@@ -42,6 +42,7 @@ public:
 	EBlockChainStatus AddBlockHeaders(const std::vector<BlockHeaderPtr>& blockHeaders) final;
 
 	fs::path SnapshotTxHashSet(BlockHeaderPtr pBlockHeader) final;
+	ITxHashSetPtr CreateTxHashSetSnapshot(BlockHeaderPtr pBlockHeader) final;
 	EBlockChainStatus ProcessTransactionHashSet(const Hash& blockHash, const fs::path& path, SyncStatus& syncStatus) final;
 	EBlockChainStatus ProcessPIBDTransactionHashSet(const Hash& blockHash, SyncStatus& syncStatus) final;
 	EBlockChainStatus AddTransaction(TransactionPtr pTransaction, const EPoolType poolType) final;

@@ -275,7 +275,7 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
                 }
             }
 
-            LOG_DEBUG_F("Sending PIHD header segment {}:{} ({} headers) to {}.",
+            LOG_TRACE_F("Sending PIHD header segment {}:{} ({} headers) to {}.",
                 identifier.GetHeight(),
                 identifier.GetIndex(),
                 blockHeaders.size(),
@@ -287,11 +287,43 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         {
             HeaderSegmentMessage message = HeaderSegmentMessage::Deserialize(byteBuffer);
             std::vector<BlockHeaderPtr> blockHeaders = message.GetHeaders();
+            const SegmentIdentifier& identifier = message.GetIdentifier();
             LOG_TRACE_F("PIHD header segment {}:{} with {} headers received from {}.",
-                message.GetIdentifier().GetHeight(),
-                message.GetIdentifier().GetIndex(),
+                identifier.GetHeight(),
+                identifier.GetIndex(),
                 blockHeaders.size(),
                 pConnection);
+
+            if (identifier.GetHeight() != P2P::PIHD_HEADER_SEGMENT_HEIGHT) {
+                LOG_DEBUG_F("Ignoring PIHD header segment {}:{} from {} with unexpected segment height.",
+                    identifier.GetHeight(),
+                    identifier.GetIndex(),
+                    pConnection);
+                break;
+            }
+
+            if (!blockHeaders.empty()) {
+                const uint64_t expectedStart = identifier.GetLeafOffset() + 1;
+                const uint64_t receivedStart = blockHeaders.front()->GetHeight();
+                const uint64_t receivedEnd = blockHeaders.back()->GetHeight();
+                bool consecutive = receivedStart == expectedStart;
+                for (size_t i = 1; consecutive && i < blockHeaders.size(); ++i) {
+                    consecutive = blockHeaders[i]->GetHeight() == blockHeaders[i - 1]->GetHeight() + 1;
+                }
+
+                if (!consecutive) {
+                    LOG_DEBUG_F(
+                        "Ignoring stale or malformed PIHD header segment {}:{} from {} with range {}..{}; expected start {}.",
+                        identifier.GetHeight(),
+                        identifier.GetIndex(),
+                        pConnection,
+                        receivedStart,
+                        receivedEnd,
+                        expectedStart);
+                    break;
+                }
+            }
+
             HeaderBatchCache::Get().AddHeaders(
                 m_pBlockChain,
                 pConnection,
@@ -435,11 +467,11 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         case GetOutputBitmapSegment:
         {
             const GetOutputBitmapSegmentMessage message = GetOutputBitmapSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG_F("Sending output bitmap segment {}:{} for {} to {}.",
+            LOG_TRACE(StringUtil::Format("Sending output bitmap segment {}:{} for {} to {}.",
                 message.GetIdentifier().GetHeight(),
                 message.GetIdentifier().GetIndex(),
                 message.GetBlockHash(),
-                pConnection);
+                pConnection));
             m_pPipeline->SendOutputBitmapSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
@@ -452,11 +484,11 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         case GetOutputSegment:
         {
             const GetOutputSegmentMessage message = GetOutputSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG_F("Sending output segment {}:{} for {} to {}.",
+            LOG_TRACE(StringUtil::Format("Sending output segment {}:{} for {} to {}.",
                 message.GetIdentifier().GetHeight(),
                 message.GetIdentifier().GetIndex(),
                 message.GetBlockHash(),
-                pConnection);
+                pConnection));
             m_pPipeline->SendOutputSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
@@ -469,11 +501,11 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         case GetRangeProofSegment:
         {
             const GetRangeProofSegmentMessage message = GetRangeProofSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG_F("Sending rangeproof segment {}:{} for {} to {}.",
+            LOG_TRACE(StringUtil::Format("Sending rangeproof segment {}:{} for {} to {}.",
                 message.GetIdentifier().GetHeight(),
                 message.GetIdentifier().GetIndex(),
                 message.GetBlockHash(),
-                pConnection);
+                pConnection));
             m_pPipeline->SendRangeProofSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }
@@ -486,11 +518,11 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         case GetKernelSegment:
         {
             const GetKernelSegmentMessage message = GetKernelSegmentMessage::Deserialize(byteBuffer);
-            LOG_DEBUG_F("Sending kernel segment {}:{} for {} to {}.",
+            LOG_TRACE(StringUtil::Format("Sending kernel segment {}:{} for {} to {}.",
                 message.GetIdentifier().GetHeight(),
                 message.GetIdentifier().GetIndex(),
                 message.GetBlockHash(),
-                pConnection);
+                pConnection));
             m_pPipeline->SendKernelSegment(pConnection, message.GetBlockHash(), message.GetIdentifier());
             break;
         }

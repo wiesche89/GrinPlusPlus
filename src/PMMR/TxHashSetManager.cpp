@@ -277,3 +277,39 @@ fs::path TxHashSetManager::SaveSnapshot(std::shared_ptr<IBlockDB> pBlockDB, Bloc
 
 	return zipFilePath;
 }
+
+ITxHashSetPtr TxHashSetManager::CreateSnapshot(std::shared_ptr<IBlockDB> pBlockDB, BlockHeaderPtr pHeader) const
+{
+	if (m_pTxHashSet == nullptr)
+	{
+		throw std::exception();
+	}
+
+	const fs::path snapshotDir = fs::temp_directory_path() / "PIBDSegments" / pHeader->ShortHash();
+
+	try
+	{
+		FileUtil::RemoveFile(snapshotDir);
+
+		BlockHeaderPtr pFlushedHeader = nullptr;
+		{
+			FileUtil::CopyDirectory(m_config.GetTxHashSetPath(), snapshotDir);
+			pFlushedHeader = m_pTxHashSet->GetFlushedBlockHeader();
+		}
+
+		auto pKernelMMR = KernelMMR::Load(snapshotDir);
+		auto pOutputPMMR = OutputPMMR::Load(snapshotDir);
+		auto pRangeProofPMMR = RangeProofPMMR::Load(snapshotDir);
+		auto pSnapshot = std::shared_ptr<TxHashSet>(new TxHashSet(pKernelMMR, pOutputPMMR, pRangeProofPMMR, pFlushedHeader));
+
+		pSnapshot->Rewind(pBlockDB, *pHeader);
+		pSnapshot->Commit();
+
+		return pSnapshot;
+	}
+	catch (...)
+	{
+		FileUtil::RemoveFile(snapshotDir);
+		throw;
+	}
+}

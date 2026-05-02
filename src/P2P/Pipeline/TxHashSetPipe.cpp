@@ -265,24 +265,40 @@ void TxHashSetPipe::SendTxHashSet(const std::shared_ptr<Connection>& pConnection
 void TxHashSetPipe::SendOutputBitmapSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
-	const auto txHashSetReader = m_pTxHashSetManager->Read();
-	const auto pTxHashSet = txHashSetReader->GetTxHashSet();
-	if (pHeader == nullptr || pTxHashSet == nullptr || pTxHashSet->GetFlushedBlockHeader()->GetHash() != blockHash) {
+	if (pHeader == nullptr) {
+		LOG_DEBUG(StringUtil::Format("Cannot send output bitmap segment {}:{} for {}; header not found.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash));
+		return;
+	}
+
+	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	if (pTxHashSet == nullptr) {
+		LOG_DEBUG(StringUtil::Format("Cannot send output bitmap segment {}:{} for {}; TxHashSet is not open.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash));
 		return;
 	}
 
 	std::optional<BitmapSegment> segment = pTxHashSet->GetOutputBitmapSegment(identifier);
 	if (segment.has_value()) {
-		pConnection->SendAsync(OutputBitmapSegmentMessage(blockHash, std::move(segment.value()), pHeader->GetOutputRoot()));
+		const Hash outputRoot = pTxHashSet->GetOutputRoot(pHeader->GetOutputMMRSize());
+		pConnection->SendAsync(OutputBitmapSegmentMessage(blockHash, std::move(segment.value()), outputRoot));
+	} else {
+		LOG_DEBUG(StringUtil::Format("No output bitmap segment {}:{} available for {}.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash));
 	}
 }
 
 void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
-	const auto txHashSetReader = m_pTxHashSetManager->Read();
-	const auto pTxHashSet = txHashSetReader->GetTxHashSet();
-	if (pHeader == nullptr || pTxHashSet == nullptr || pTxHashSet->GetFlushedBlockHeader()->GetHash() != blockHash) {
+	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	if (pHeader == nullptr || pTxHashSet == nullptr) {
 		return;
 	}
 
@@ -295,9 +311,8 @@ void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnec
 
 void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
-	const auto txHashSetReader = m_pTxHashSetManager->Read();
-	const auto pTxHashSet = txHashSetReader->GetTxHashSet();
-	if (pTxHashSet == nullptr || pTxHashSet->GetFlushedBlockHeader()->GetHash() != blockHash) {
+	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	if (pTxHashSet == nullptr) {
 		return;
 	}
 
@@ -309,9 +324,8 @@ void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pCo
 
 void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
-	const auto txHashSetReader = m_pTxHashSetManager->Read();
-	const auto pTxHashSet = txHashSetReader->GetTxHashSet();
-	if (pTxHashSet == nullptr || pTxHashSet->GetFlushedBlockHeader()->GetHash() != blockHash) {
+	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	if (pTxHashSet == nullptr) {
 		return;
 	}
 
@@ -321,9 +335,50 @@ void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnec
 	}
 }
 
+ITxHashSetConstPtr TxHashSetPipe::GetSegmentTxHashSet(const Hash& blockHash)
+{
+	std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+
+	{
+		const auto txHashSetReader = m_pTxHashSetManager->Read();
+		const auto pLiveTxHashSet = txHashSetReader->GetTxHashSet();
+		if (pLiveTxHashSet != nullptr && pLiveTxHashSet->GetFlushedBlockHeader()->GetHash() == blockHash) {
+			return pLiveTxHashSet;
+		}
+	}
+
+	if (m_pibdSegmentTxHashSet != nullptr && m_pibdSegmentTxHashSetHash.has_value() && m_pibdSegmentTxHashSetHash.value() == blockHash) {
+		return m_pibdSegmentTxHashSet;
+	}
+
+	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
+	if (pHeader == nullptr) {
+		LOG_DEBUG(StringUtil::Format("Cannot create PIBD segment TxHashSet for {}; header not found.", blockHash));
+		return nullptr;
+	}
+
+	try
+	{
+		LOG_INFO(StringUtil::Format("Creating PIBD segment TxHashSet for {} at height {}.", blockHash, pHeader->GetHeight()));
+		m_pibdSegmentTxHashSet.reset();
+		m_pibdSegmentTxHashSet = m_pBlockChain->CreateTxHashSetSnapshot(pHeader);
+		m_pibdSegmentTxHashSetHash = blockHash;
+
+		LOG_INFO(StringUtil::Format("PIBD segment TxHashSet ready for {} at height {}.", blockHash, pHeader->GetHeight()));
+		return m_pibdSegmentTxHashSet;
+	}
+	catch (std::exception& e)
+	{
+		LOG_WARNING(StringUtil::Format("Failed to create PIBD segment TxHashSet for {}: {}", blockHash, e.what()));
+		m_pibdSegmentTxHashSet.reset();
+		m_pibdSegmentTxHashSetHash.reset();
+		return nullptr;
+	}
+}
+
 void TxHashSetPipe::ReceiveOutputBitmapSegment(const std::shared_ptr<Connection>& pConnection, const OutputBitmapSegmentMessage& message)
 {
-	LOG_DEBUG(StringUtil::Format("Received output bitmap segment {}:{} for {} from {}.",
+	LOG_TRACE(StringUtil::Format("Received output bitmap segment {}:{} for {} from {}.",
 		message.GetSegment().GetIdentifier().GetHeight(),
 		message.GetSegment().GetIdentifier().GetIndex(),
 		message.GetBlockHash(),
@@ -341,7 +396,7 @@ void TxHashSetPipe::ReceiveOutputBitmapSegment(const std::shared_ptr<Connection>
 	const SegmentTypeIdentifier typeId(SegmentType::OutputBitmap, message.GetSegment().GetIdentifier());
 	if (m_pDesegmenter->IsApplied(typeId)) {
 		m_segmentRequests.MarkReceived(typeId);
-		LOG_DEBUG(StringUtil::Format("Ignoring already applied output bitmap segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring already applied output bitmap segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -349,7 +404,7 @@ void TxHashSetPipe::ReceiveOutputBitmapSegment(const std::shared_ptr<Connection>
 	}
 
 	if (!IsExpectedPIBDSegment(m_segmentRequests, typeId, pConnection)) {
-		LOG_DEBUG(StringUtil::Format("Ignoring unexpected output bitmap segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring unexpected output bitmap segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -373,7 +428,7 @@ void TxHashSetPipe::ReceiveOutputBitmapSegment(const std::shared_ptr<Connection>
 
 void TxHashSetPipe::ReceiveOutputSegment(const std::shared_ptr<Connection>& pConnection, const OutputSegmentMessage& message)
 {
-	LOG_DEBUG(StringUtil::Format("Received output segment {}:{} for {} from {}.",
+	LOG_TRACE(StringUtil::Format("Received output segment {}:{} for {} from {}.",
 		message.GetSegment().GetIdentifier().GetHeight(),
 		message.GetSegment().GetIdentifier().GetIndex(),
 		message.GetBlockHash(),
@@ -391,7 +446,7 @@ void TxHashSetPipe::ReceiveOutputSegment(const std::shared_ptr<Connection>& pCon
 	const SegmentTypeIdentifier typeId(SegmentType::Output, message.GetSegment().GetIdentifier());
 	if (m_pDesegmenter->IsApplied(typeId)) {
 		m_segmentRequests.MarkReceived(typeId);
-		LOG_DEBUG(StringUtil::Format("Ignoring already applied output segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring already applied output segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -399,7 +454,7 @@ void TxHashSetPipe::ReceiveOutputSegment(const std::shared_ptr<Connection>& pCon
 	}
 
 	if (!IsExpectedPIBDSegment(m_segmentRequests, typeId, pConnection)) {
-		LOG_DEBUG(StringUtil::Format("Ignoring unexpected output segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring unexpected output segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -421,7 +476,7 @@ void TxHashSetPipe::ReceiveOutputSegment(const std::shared_ptr<Connection>& pCon
 
 void TxHashSetPipe::ReceiveRangeProofSegment(const std::shared_ptr<Connection>& pConnection, const RangeProofSegmentMessage& message)
 {
-	LOG_DEBUG(StringUtil::Format("Received rangeproof segment {}:{} for {} from {}.",
+	LOG_TRACE(StringUtil::Format("Received rangeproof segment {}:{} for {} from {}.",
 		message.GetSegment().GetIdentifier().GetHeight(),
 		message.GetSegment().GetIdentifier().GetIndex(),
 		message.GetBlockHash(),
@@ -439,7 +494,7 @@ void TxHashSetPipe::ReceiveRangeProofSegment(const std::shared_ptr<Connection>& 
 	const SegmentTypeIdentifier typeId(SegmentType::RangeProof, message.GetSegment().GetIdentifier());
 	if (m_pDesegmenter->IsApplied(typeId)) {
 		m_segmentRequests.MarkReceived(typeId);
-		LOG_DEBUG(StringUtil::Format("Ignoring already applied rangeproof segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring already applied rangeproof segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -447,7 +502,7 @@ void TxHashSetPipe::ReceiveRangeProofSegment(const std::shared_ptr<Connection>& 
 	}
 
 	if (!IsExpectedPIBDSegment(m_segmentRequests, typeId, pConnection)) {
-		LOG_DEBUG(StringUtil::Format("Ignoring unexpected rangeproof segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring unexpected rangeproof segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -469,7 +524,7 @@ void TxHashSetPipe::ReceiveRangeProofSegment(const std::shared_ptr<Connection>& 
 
 void TxHashSetPipe::ReceiveKernelSegment(const std::shared_ptr<Connection>& pConnection, const KernelSegmentMessage& message)
 {
-	LOG_DEBUG(StringUtil::Format("Received kernel segment {}:{} for {} from {}.",
+	LOG_TRACE(StringUtil::Format("Received kernel segment {}:{} for {} from {}.",
 		message.GetSegment().GetIdentifier().GetHeight(),
 		message.GetSegment().GetIdentifier().GetIndex(),
 		message.GetBlockHash(),
@@ -487,7 +542,7 @@ void TxHashSetPipe::ReceiveKernelSegment(const std::shared_ptr<Connection>& pCon
 	const SegmentTypeIdentifier typeId(SegmentType::Kernel, message.GetSegment().GetIdentifier());
 	if (m_pDesegmenter->IsApplied(typeId)) {
 		m_segmentRequests.MarkReceived(typeId);
-		LOG_DEBUG(StringUtil::Format("Ignoring already applied kernel segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring already applied kernel segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -495,7 +550,7 @@ void TxHashSetPipe::ReceiveKernelSegment(const std::shared_ptr<Connection>& pCon
 	}
 
 	if (!IsExpectedPIBDSegment(m_segmentRequests, typeId, pConnection)) {
-		LOG_DEBUG(StringUtil::Format("Ignoring unexpected kernel segment {}:{} from {}.",
+		LOG_TRACE(StringUtil::Format("Ignoring unexpected kernel segment {}:{} from {}.",
 			message.GetSegment().GetIdentifier().GetHeight(),
 			message.GetSegment().GetIdentifier().GetIndex(),
 			pConnection));
@@ -789,7 +844,7 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 
 	if (!requestsToSend.empty()) {
 		const BlockHeader& archiveHeader = m_pDesegmenter->GetArchiveHeader();
-		LOG_DEBUG(StringUtil::Format(
+		LOG_TRACE(StringUtil::Format(
 			"Requesting {} PIBD segment(s) across {} peer(s) (pending={}, budget={}, archive_height={}, archive_hash={}).",
 			requestsToSend.size(),
 			requestPeers.size(),
@@ -846,7 +901,7 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 				m_segmentRequests.AddOrRefresh(typeId, pCurrentPeer->GetIPAddress().Format());
 				const BlockHeader& archiveHeader = m_pDesegmenter->GetArchiveHeader();
 				const uint64_t peerHeight = GetPeerReportedHeight(pConnectionManager, pCurrentPeer);
-				LOG_DEBUG(StringUtil::Format("Requested PIBD {} segment {}:{} for archive {}:{} from {} (peer_height={}).",
+				LOG_TRACE(StringUtil::Format("Requested PIBD {} segment {}:{} for archive {}:{} from {} (peer_height={}).",
 					GetPIBDSegmentTypeName(typeId.GetSegmentType()),
 					typeId.GetIdentifier().GetHeight(),
 					typeId.GetIdentifier().GetIndex(),

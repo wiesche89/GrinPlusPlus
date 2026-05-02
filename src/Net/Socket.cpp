@@ -34,7 +34,8 @@ Socket::~Socket()
 {
     CloseSocket();
 
-    std::lock(m_socketMutex, m_writeQueueMutex);
+    std::unique_lock<std::mutex> queueLock(m_writeQueueMutex);
+    std::unique_lock<std::shared_mutex> socketLock(m_socketMutex);
     m_pSocket.reset();
     m_pContext.reset();
 }
@@ -187,7 +188,8 @@ bool Socket::SendSync(const std::vector<uint8_t>& message, const bool incrementC
 
 void Socket::SendAsync(const std::vector<uint8_t>& message)
 {
-    bool first_in_queue = m_writeQueue.empty();
+    std::unique_lock<std::mutex> queueLock(m_writeQueueMutex);
+    const bool first_in_queue = m_writeQueue.empty();
     m_writeQueue.push_back(message);
 
     if (!first_in_queue) {
@@ -195,6 +197,19 @@ void Socket::SendAsync(const std::vector<uint8_t>& message)
         // It will send this message when it completes.
         return;
     }
+
+    StartAsyncWriteLocked();
+}
+
+void Socket::StartAsyncWriteLocked()
+{
+    // The async buffer must reference the queued message, not a stack-local copy.
+    // m_writeQueueMutex is held by the caller until async_write has captured it.
+    if (m_writeQueue.empty()) {
+        return;
+    }
+
+    const std::vector<uint8_t>& message = m_writeQueue.front();
 
     std::shared_lock<std::shared_mutex> socketLock(m_socketMutex);
     if (m_socketOpen) {
@@ -210,6 +225,7 @@ void Socket::HandleSent(const asio::error_code& ec, size_t)
 {
     m_rateCounter.AddMessageSent();
 
+    std::unique_lock<std::mutex> queueLock(m_writeQueueMutex);
     if (!m_writeQueue.empty()) {
         m_writeQueue.pop_front();
     }
@@ -217,16 +233,7 @@ void Socket::HandleSent(const asio::error_code& ec, size_t)
     if (ec) {
         LOG_INFO_F("Failed to send message to {}: {}", *this, ec.message());
     } else if (!m_writeQueue.empty()) {
-        std::vector<uint8_t> message = m_writeQueue.front();
-
-        std::shared_lock<std::shared_mutex> socketLock(m_socketMutex);
-        if (m_socketOpen) {
-            asio::async_write(
-                *m_pSocket,
-                asio::buffer(message.data(), message.size()),
-                std::bind(&Socket::HandleSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)
-            );
-        }
+        StartAsyncWriteLocked();
     }
 }
 
@@ -235,7 +242,7 @@ std::vector<uint8_t> Socket::ReceiveSync(const size_t num_bytes, const bool incr
     std::chrono::time_point timeout = std::chrono::system_clock::now() + std::chrono::seconds(10);
     while (!HasReceivedData()) {
         if (std::chrono::system_clock::now() >= timeout || !Global::IsRunning()) {
-            LOG_DEBUG(StringUtil::Format("ReceiveSync timed out waiting for {} bytes from {}", num_bytes, m_address));
+            LOG_TRACE(StringUtil::Format("ReceiveSync timed out waiting for {} bytes from {}", num_bytes, m_address));
             return {};
         }
 

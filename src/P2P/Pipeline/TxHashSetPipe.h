@@ -71,6 +71,7 @@ public:
 private:
 	void UpdatePIBDStatus(const bool aborted = false, const bool errored = false);
 	uint64_t GetPIBDCompletedToHeight() const;
+	ITxHashSetConstPtr GetSegmentTxHashSet(const Hash& blockHash);
 
 	TxHashSetPipe(
 		const std::shared_ptr<ConnectionManager>& pConnectionManager,
@@ -116,4 +117,7 @@ private:
 	std::chrono::steady_clock::time_point m_lastPIBDStatusHeightCalcTime{};
 	size_t m_pibdNextPeerIndex{ 0 };
 	size_t m_uncommittedPIBDSegments{ 0 };
+	mutable std::mutex m_pibdSegmentTxHashSetMutex;
+	std::optional<Hash> m_pibdSegmentTxHashSetHash;
+	ITxHashSetPtr m_pibdSegmentTxHashSet;
 };

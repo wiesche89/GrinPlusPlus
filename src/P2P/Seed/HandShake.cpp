@@ -32,17 +32,17 @@ void HandShake::PerformOutboundHandshake(const Socket::Ptr& pSocket, ConnectedPe
     // Send Hand Message
     TransmitHandMessage(pSocket);
 
-    LOG_DEBUG(StringUtil::Format("Waiting for Shake from {}", connectedPeer));
+    LOG_TRACE(StringUtil::Format("Waiting for Shake from {}", connectedPeer));
 
     // Get Shake Message
     auto pReceived = RetrieveMessage(pSocket, *connectedPeer.GetPeer());
     if (pReceived == nullptr) {
-        LOG_DEBUG(StringUtil::Format("No complete message header received while waiting for Shake from {}", connectedPeer));
+        LOG_TRACE(StringUtil::Format("No complete message header received while waiting for Shake from {}", connectedPeer));
         throw PROTOCOL_EXCEPTION("Shake message not received");
     }
 
     if (pReceived->GetMessageType() != MessageTypes::Shake) {
-        LOG_DEBUG(StringUtil::Format("Expected Shake from {} but received {}", connectedPeer, MessageTypes::ToString(pReceived->GetMessageType())));
+        LOG_TRACE(StringUtil::Format("Expected Shake from {} but received {}", connectedPeer, MessageTypes::ToString(pReceived->GetMessageType())));
         throw PROTOCOL_EXCEPTION_F("Expected shake but received {}.", *pReceived);
     }
 
@@ -99,7 +99,7 @@ void HandShake::TransmitHandMessage(const Socket::Ptr& pSocket) const
     );
     SocketAddress receiverAddress(pSocket->GetAsioSocket()->remote_endpoint().address().to_string(), pSocket->GetAsioSocket()->remote_endpoint().port());
 
-    LOG_DEBUG(StringUtil::Format(
+    LOG_TRACE(StringUtil::Format(
         "Sending Hand to {} with genesis hash {} (sender={}, receiver={})",
         pSocket->GetSocketAddress(),
         Global::GetGenesisHash().ToHex(),
@@ -142,7 +142,7 @@ std::unique_ptr<RawMessage> HandShake::RetrieveMessage(const Socket::Ptr& pSocke
 {
     std::vector<uint8_t> headerBuffer = pSocket->ReceiveSync(11, true);
     if (headerBuffer.size() != 11) {
-        LOG_DEBUG(StringUtil::Format(
+        LOG_TRACE(StringUtil::Format(
             "Failed to read complete message header from {}. Received {} of 11 bytes.",
             peer,
             headerBuffer.size()

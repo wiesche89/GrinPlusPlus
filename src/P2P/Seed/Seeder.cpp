@@ -187,7 +187,7 @@ void Seeder::SeedNewConnection()
 {
     PeerPtr pPeer = m_peerManager.Write()->GetNewPeer(Capabilities::FAST_SYNC_NODE);
     if (pPeer != nullptr) {
-        LOG_DEBUG_F("Attempting to connect to: {}", pPeer);
+        LOG_TRACE_F("Attempting to connect to: {}", pPeer);
 
         ConnectedPeer connectedPeer(
             pPeer,

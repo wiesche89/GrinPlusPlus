@@ -79,6 +79,7 @@ public:
 private:
 	bool HasReceivedData();
 	void ThrowSocketException(const asio::error_code& ec);
+	void StartAsyncWriteLocked();
 	void HandleSent(const asio::error_code& ec, size_t bytes_transferred);
 
 	std::shared_mutex m_socketMutex;

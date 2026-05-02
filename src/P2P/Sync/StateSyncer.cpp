@@ -333,7 +333,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			m_pibdNoPeerSinceSet = false;
 			m_lastPIBDProgressLeaves = std::numeric_limits<uint64_t>::max();
 		} else {
-			LOG_DEBUG(StringUtil::Format(
+			LOG_TRACE(StringUtil::Format(
 				"No eligible PIBD_HIST_1 peer found. connected={}, min_height={}, archive_height={}, header_height={}, no_peer_for={}s.",
 				connectedPeers.size(), minPeerHeight, requestedHeight, headerHeight, noPeerSecs));
 		}
