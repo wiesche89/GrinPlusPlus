@@ -234,7 +234,16 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
             HeadersMessage headersMessage = HeadersMessage::Deserialize(byteBuffer);
             std::vector<BlockHeaderPtr> blockHeaders = headersMessage.GetHeaders();
 
-            LOG_TRACE_F("{} headers received from {}", blockHeaders.size(), pConnection);
+            if (!blockHeaders.empty()) {
+                LOG_TRACE_F(
+                    "{} headers received from {} ({}..{}).",
+                    blockHeaders.size(),
+                    pConnection,
+                    blockHeaders.front()->GetHeight(),
+                    blockHeaders.back()->GetHeight());
+            } else {
+                LOG_TRACE_F("0 headers received from {}.", pConnection);
+            }
 
             HeaderBatchCache::Get().AddHeaders(
                 m_pBlockChain,
@@ -242,7 +251,7 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
                 std::move(blockHeaders),
                 HeaderBatchCache::Source::LegacyHeaders);
 
-            LOG_TRACE_F("Headers message from {} finished processing", pConnection);
+            LOG_TRACE_F("Headers message from {} finished processing.", pConnection);
             break;
         }
         case GetHeaderSegment:

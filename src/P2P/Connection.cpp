@@ -130,7 +130,7 @@ void Connection::Thread_Connect(std::shared_ptr<Connection> pConnection)
         );
     }
     catch (const std::exception& e) {
-        LOG_TRACE_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e);
+        LOG_TRACE_F("Failed to connect to {}: {}", pConnection->m_connectedPeer, e.what());
     }
 }
 
@@ -142,7 +142,7 @@ void Connection::ConnectOutbound()
         std::bind(&Connection::HandleConnected, shared_from_this(), std::placeholders::_1)
     );
 
-    auto timeout = std::chrono::system_clock::now() + std::chrono::seconds(1);
+    auto timeout = std::chrono::system_clock::now() + std::chrono::seconds(5);
     while (!m_pSocket->IsConnectFailed() && !m_pSocket->IsOpen() && system_clock::now() < timeout && Global::IsRunning()) {
         ThreadUtil::SleepFor(std::chrono::milliseconds(5));
     }

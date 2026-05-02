@@ -245,6 +245,7 @@ std::vector<PeerPtr> PeerManager::GetPeersWithCapability(
         const PeerPtr& peer = peerEntry.m_peer;
 
         if (connectingToPeer && peer->GetLastBanTime() > maxBanTime) {
+            iter++;
             continue;
         }
 

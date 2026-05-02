@@ -85,12 +85,13 @@ void Seeder::Thread_Seed(Seeder& seeder)
 
             auto now = std::chrono::system_clock::now();
             const size_t numOutbound = seeder.m_connectionManager.GetNumOutbound();
+            const bool hasPreferredPeers = !Global::GetConfig().GetPreferredPeers().empty();
 
             // Refresh DNS more aggressively when we have very few peers
             const auto dnsInterval = numOutbound == 0
                 ? std::chrono::seconds(30)
                 : std::chrono::minutes(5);
-            if (numOutbound < minimumConnections && lastDNSTime + dnsInterval < now) {
+            if (!hasPreferredPeers && numOutbound < minimumConnections && lastDNSTime + dnsInterval < now) {
                 lastDNSTime = now;
                 LOG_INFO("Refreshing peers from DNS seeders");
                 std::vector<SocketAddress> peerAddresses = DNSSeeder::GetPeersFromDNS();

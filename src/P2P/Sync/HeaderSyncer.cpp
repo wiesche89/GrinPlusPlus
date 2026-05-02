@@ -14,6 +14,18 @@ static constexpr size_t PIHD_MAX_REQUESTS_PER_TICK = 3;
 static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS_PER_PEER = 3;
 static constexpr std::chrono::seconds PIHD_HEADER_TIMEOUT(10);
 
+static bool CanUsePIHD(const ConnectedPeer& peer, const uint64_t mostWork)
+{
+	return peer.GetTotalDifficulty() >= mostWork
+		&& peer.GetPeer() != nullptr
+		&& peer.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIHD_HIST);
+}
+
+static bool IsPIHDIdentifier(const SegmentIdentifier& identifier)
+{
+	return identifier.GetHeight() == P2P::PIHD_HEADER_SEGMENT_HEIGHT;
+}
+
 bool HeaderSyncer::SyncHeaders(const SyncStatus& syncStatus, const bool startup)
 {
 	const uint64_t chainHeight = syncStatus.GetHeaderHeight();
@@ -70,7 +82,7 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 					return true;
 				}
 
-				if (request.identifier.GetHeight() == P2P::PIHD_HEADER_SEGMENT_HEIGHT) {
+				if (IsPIHDIdentifier(request.identifier)) {
 					const uint64_t segmentEnd = request.identifier.GetLeafOffset() + request.identifier.GetSegmentCapacity();
 					const bool completed = height >= segmentEnd;
 					removedPendingRequest = removedPendingRequest || completed;
@@ -86,17 +98,45 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 	size_t pihdPeerCount = 0;
 	const uint64_t mostWork = pConnectionManager->GetMostWork();
 	for (const ConnectedPeer& peer : pConnectionManager->GetConnectedPeers()) {
-		if (peer.GetTotalDifficulty() >= mostWork
-			&& peer.GetPeer() != nullptr
-			&& peer.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIHD_HIST)) {
+		if (CanUsePIHD(peer, mostWork)) {
 			++pihdPeerCount;
 		}
 	}
 
+	const size_t legacyPendingCount = std::count_if(
+		m_pendingRequests.cbegin(),
+		m_pendingRequests.cend(),
+		[](const PendingHeaderRequest& request) { return !IsPIHDIdentifier(request.identifier); });
+	size_t pihdPendingCount = m_pendingRequests.size() - legacyPendingCount;
+
+	if (pihdPeerCount == 0) {
+		if (pihdPendingCount > 0) {
+			LOG_TRACE("No PIHD-capable peer available; dropping pending PIHD header requests.");
+			m_pendingRequests.erase(
+				std::remove_if(
+					m_pendingRequests.begin(),
+					m_pendingRequests.end(),
+					[](const PendingHeaderRequest& request) { return IsPIHDIdentifier(request.identifier); }),
+				m_pendingRequests.end());
+			pihdPendingCount = 0;
+			removedPendingRequest = true;
+		}
+
+		if (legacyPendingCount == 0) {
+			LOG_TRACE_F("No PIHD-capable peer available; requesting legacy headers at height {}.", height);
+			return true;
+		}
+
+		return removedPendingRequest;
+	}
+
 	const size_t targetPendingCount = pihdPeerCount > 0 ? PIHD_MAX_IN_FLIGHT_SEGMENTS : 0;
-	if (removedPendingRequest || m_pendingRequests.size() < targetPendingCount) {
+	if (legacyPendingCount == 0 && (removedPendingRequest || pihdPendingCount < targetPendingCount)) {
 		if (previousPendingCount > 0) {
-			LOG_TRACE("PIHD header requests completed, timed out, or peers disconnected. Requesting again.");
+			LOG_TRACE_F(
+				"Header requests completed, timed out, or peers disconnected. pending_pihd={}, target_pihd={}.",
+				pihdPendingCount,
+				targetPendingCount);
 		}
 		return true;
 	}
@@ -106,7 +146,11 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 
 bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 {
-	LOG_TRACE("Requesting headers.");
+	LOG_TRACE_F(
+		"Requesting headers. header_height={}, network_height={}, pending={}.",
+		syncStatus.GetHeaderHeight(),
+		syncStatus.GetNetworkHeight(),
+		m_pendingRequests.size());
 
 	const std::shared_ptr<ConnectionManager> pConnectionManager = m_pConnectionManager.lock();
 	if (pConnectionManager == nullptr) {
@@ -118,9 +162,7 @@ bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 	const uint64_t mostWork = pConnectionManager->GetMostWork();
 	const auto now = std::chrono::system_clock::now();
 	for (const ConnectedPeer& peer : peers) {
-		if (peer.GetTotalDifficulty() >= mostWork
-			&& peer.GetPeer() != nullptr
-			&& peer.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIHD_HIST)) {
+		if (CanUsePIHD(peer, mostWork)) {
 			pihdPeers.push_back(peer);
 		}
 	}
@@ -190,8 +232,13 @@ bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 		const GetHeadersMessage getHeadersMessage(std::move(locators));
 		PeerPtr pPeer = pConnectionManager->SendMessageToMostWorkPeer(getHeadersMessage);
 		if (pPeer != nullptr) {
-			m_pendingRequests.push_back(PendingHeaderRequest{ pPeer, SegmentIdentifier(), timeout });
+			m_pendingRequests.push_back(PendingHeaderRequest{ pPeer, SegmentIdentifier(0, syncStatus.GetHeaderHeight()), timeout });
 			sentCount = 1;
+			LOG_TRACE_F(
+				"Legacy HeaderSync requested headers from {} at height {} with {} locators.",
+				pPeer,
+				syncStatus.GetHeaderHeight(),
+				locators.size());
 		}
 	}
 

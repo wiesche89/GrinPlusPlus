@@ -3,12 +3,20 @@
 #include <Common/Logger.h>
 #include <Common/Util/StringUtil.h>
 #include <Core/Exceptions/BadDataException.h>
+#include <P2P/Common.h>
 #include <algorithm>
 #include <chrono>
 #include <iterator>
 
 static constexpr size_t MAX_CACHED_HEADER_BATCHES = 16;
-static constexpr size_t MAX_PROCESS_HEADER_BATCH_SIZE = 2048;
+static constexpr size_t PIHD_MAX_PROCESS_HEADER_BATCH_SIZE = 2048;
+
+static size_t GetMaxProcessHeaderBatchSize(const HeaderBatchCache::Source source) noexcept
+{
+	return source == HeaderBatchCache::Source::PIHDSegment
+		? PIHD_MAX_PROCESS_HEADER_BATCH_SIZE
+		: P2P::MAX_BLOCK_HEADERS;
+}
 
 static uint64_t MillisecondsSince(const std::chrono::steady_clock::time_point start)
 {
@@ -147,7 +155,8 @@ bool HeaderBatchCache::TryAppendContiguousReadyBatches(
 	const Source source)
 {
 	bool appended = false;
-	while (!headers.empty() && headers.size() < MAX_PROCESS_HEADER_BATCH_SIZE) {
+	const size_t maxProcessHeaderBatchSize = GetMaxProcessHeaderBatchSize(source);
+	while (!headers.empty() && headers.size() < maxProcessHeaderBatchSize) {
 		std::sort(m_batches.begin(), m_batches.end(), StartsBefore);
 		bool foundNext = false;
 
@@ -174,7 +183,7 @@ bool HeaderBatchCache::TryAppendContiguousReadyBatches(
 				continue;
 			}
 
-			const size_t remainingCapacity = MAX_PROCESS_HEADER_BATCH_SIZE - headers.size();
+			const size_t remainingCapacity = maxProcessHeaderBatchSize - headers.size();
 			if (iter->headers.size() > remainingCapacity) {
 				continue;
 			}
