@@ -289,6 +289,13 @@ private:
 		m_pHashFile->AddData(hash);
 		m_pPruneList->AddPrunedRoot(Index::At(position));
 
+		// A pruned leaf root is not compacted by the prune-list leaf shift.
+		// Preserve the data-file slot so later leaf indexes still map to the
+		// same records after PIBD imports hash-only spent leaves.
+		if (Index::At(position).IsLeaf()) {
+			m_pDataFile->AddData(std::vector<uint8_t>(DATA_SIZE, 0));
+		}
+
 		uint64_t currentPosition = position;
 		Hash currentHash = hash;
 		for (Index parent = Index::At(currentPosition + 1); !parent.IsLeaf(); parent++) {

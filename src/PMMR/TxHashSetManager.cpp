@@ -62,6 +62,22 @@ std::optional<Hash> TxHashSetManager::GetPIBDResumeHeaderHash() const
 	}
 }
 
+void TxHashSetManager::ClearPIBDResumeState()
+{
+	Close();
+
+	const fs::path& txHashSetPath = Global::GetConfig().GetTxHashSetPath();
+	try {
+		fs::remove(txHashSetPath / PIBD_METADATA_FILE);
+		fs::remove_all(txHashSetPath / "kernel");
+		fs::remove_all(txHashSetPath / "output");
+		fs::remove_all(txHashSetPath / "rangeproof");
+		LOG_INFO("Cleared PIBD resume state after failed validation.");
+	} catch (const std::exception& e) {
+		LOG_WARNING_F("Failed to clear PIBD resume state: {}", e.what());
+	}
+}
+
 TxHashSetManager::TxHashSetManager(const Config& config)
 	: m_config(config), m_pTxHashSet(nullptr)
 {

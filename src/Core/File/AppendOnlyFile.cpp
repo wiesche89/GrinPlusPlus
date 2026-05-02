@@ -1,6 +1,7 @@
 #include <Core/File/AppendOnlyFile.h>
 #include <Core/Exceptions/FileException.h>
 #include <Common/Util/FileUtil.h>
+#include <algorithm>
 
 void AppendOnlyFile::Load()
 {
@@ -90,20 +91,48 @@ uint64_t AppendOnlyFile::GetSize() const noexcept
 
 bool AppendOnlyFile::Read(const uint64_t position, const uint64_t numBytes, std::vector<unsigned char>& data) const
 {
-	// TODO: Handle partial read from m_mmap and m_buffer
+	if (numBytes == 0) {
+		data.clear();
+		return true;
+	}
+
+	if (position > GetSize() || numBytes > GetSize() - position) {
+		return false;
+	}
+
+	data.clear();
+	data.reserve((size_t)numBytes);
+
 	if (position < m_bufferIndex)
 	{
-		m_pMappedFile->Read(position, numBytes, data);
-	}
-	else
-	{
-		const uint64_t firstBufferIndex = position - m_bufferIndex;
+		const uint64_t mappedBytes = (std::min)(numBytes, m_bufferIndex - position);
+		std::vector<unsigned char> mappedData;
+		m_pMappedFile->Read(position, mappedBytes, mappedData);
+		data.insert(data.end(), mappedData.cbegin(), mappedData.cend());
 
-		data = std::vector<unsigned char>(
-			m_buffer.cbegin() + firstBufferIndex,
-			m_buffer.cbegin() + firstBufferIndex + numBytes
-		);
+		if (mappedBytes == numBytes) {
+			return true;
+		}
+
+		const uint64_t remainingBytes = numBytes - mappedBytes;
+		if (remainingBytes > m_buffer.size()) {
+			return false;
+		}
+
+		data.insert(data.end(), m_buffer.cbegin(), m_buffer.cbegin() + remainingBytes);
+		return true;
 	}
+
+	const uint64_t firstBufferIndex = position - m_bufferIndex;
+	if (firstBufferIndex > m_buffer.size() || numBytes > m_buffer.size() - firstBufferIndex) {
+		return false;
+	}
+
+	data.insert(
+		data.end(),
+		m_buffer.cbegin() + firstBufferIndex,
+		m_buffer.cbegin() + firstBufferIndex + numBytes
+	);
 
 	return true;
 }

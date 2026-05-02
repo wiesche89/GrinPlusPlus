@@ -239,7 +239,8 @@ EBlockChainStatus BlockChain::ProcessPIBDTransactionHashSet(const Hash& blockHas
 		auto pBlockSums = pTxHashSet->ValidateTxHashSet(*pHeader, *this, syncStatus);
 		if (pBlockSums == nullptr) {
 			LOG_ERROR_F("PIBD validation of {} failed.", blockHash);
-			m_pChainState->Write()->GetTxHashSetManager()->Close();
+			pTxHashSet.reset();
+			m_pChainState->Write()->GetTxHashSetManager()->ClearPIBDResumeState();
 			return EBlockChainStatus::INVALID;
 		}
 

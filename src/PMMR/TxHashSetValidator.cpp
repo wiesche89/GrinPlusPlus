@@ -6,6 +6,7 @@
 #include "Common/MMRHashUtil.h"
 
 #include <Consensus.h>
+#include <Crypto/Crypto.h>
 #include <Core/Validation/KernelSignatureValidator.h>
 #include <Core/Validation/KernelSumValidator.h>
 #include <Common/Util/HexUtil.h>
@@ -17,11 +18,23 @@
 
 namespace
 {
+	static constexpr size_t COMMITMENT_SUM_CHUNK_SIZE = 65536;
+
 	struct NRDKernelPos
 	{
 		uint64_t height;
 		uint64_t kernelIndex;
 	};
+
+	static void FlushCommitmentChunk(
+		std::vector<Commitment>& chunk,
+		std::vector<Commitment>& partialSums)
+	{
+		if (!chunk.empty()) {
+			partialSums.push_back(Crypto::AddCommitments(chunk, std::vector<Commitment>()));
+			chunk.clear();
+		}
+	}
 }
 
 std::unique_ptr<BlockSums> TxHashSetValidator::Validate(TxHashSet& txHashSet, const BlockHeader& blockHeader, SyncStatus& syncStatus) const
@@ -350,41 +363,61 @@ BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const Blo
 
 	updateProgress(0);
 
-	std::vector<Commitment> outputCommitments;
+	std::vector<Commitment> outputCommitmentSums;
+	std::vector<Commitment> outputCommitmentChunk;
+	outputCommitmentChunk.reserve(COMMITMENT_SUM_CHUNK_SIZE);
 	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
 	for (LeafIndex output_idx = LeafIndex::At(0); output_idx < numOutputs; output_idx++) {
 		std::unique_ptr<OutputIdentifier> pOutput = pOutputPMMR->GetAt(output_idx);
 		if (pOutput != nullptr) {
-			outputCommitments.push_back(pOutput->GetCommitment());
+			outputCommitmentChunk.push_back(pOutput->GetCommitment());
+			if (outputCommitmentChunk.size() >= COMMITMENT_SUM_CHUNK_SIZE) {
+				FlushCommitmentChunk(outputCommitmentChunk, outputCommitmentSums);
+			}
 		}
 
 		++processedItems;
 		if (processedItems % 100000 == 0 || processedItems == totalItems) {
 			updateProgress(processedItems);
-			LOG_DEBUG_F("Collected kernel sum commitments {}/{}", processedItems, totalItems);
+			LOG_TRACE(StringUtil::Format(
+				"Collected output sum commitments {}/{} partials={}",
+				processedItems,
+				totalItems,
+				outputCommitmentSums.size()));
 		}
 	}
+	FlushCommitmentChunk(outputCommitmentChunk, outputCommitmentSums);
 
-	std::vector<Commitment> excessCommitments;
+	std::vector<Commitment> excessCommitmentSums;
+	std::vector<Commitment> excessCommitmentChunk;
+	excessCommitmentChunk.reserve(COMMITMENT_SUM_CHUNK_SIZE);
 	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
 	for (LeafIndex kernel_idx = LeafIndex::At(0); kernel_idx < numKernels; kernel_idx++) {
 		std::unique_ptr<TransactionKernel> pKernel = pKernelMMR->GetKernelAt(kernel_idx);
 		if (pKernel != nullptr) {
-			excessCommitments.push_back(pKernel->GetExcessCommitment());
+			excessCommitmentChunk.push_back(pKernel->GetExcessCommitment());
+			if (excessCommitmentChunk.size() >= COMMITMENT_SUM_CHUNK_SIZE) {
+				FlushCommitmentChunk(excessCommitmentChunk, excessCommitmentSums);
+			}
 		}
 
 		++processedItems;
 		if (processedItems % 100000 == 0 || processedItems == totalItems) {
 			updateProgress(processedItems);
-			LOG_DEBUG_F("Collected kernel sum commitments {}/{}", processedItems, totalItems);
+			LOG_TRACE(StringUtil::Format(
+				"Collected kernel sum commitments {}/{} partials={}",
+				processedItems,
+				totalItems,
+				excessCommitmentSums.size()));
 		}
 	}
+	FlushCommitmentChunk(excessCommitmentChunk, excessCommitmentSums);
 
 	updateProgress(totalItems);
 	return KernelSumValidator::ValidateKernelSums(
 		std::vector<Commitment>(),
-		outputCommitments,
-		excessCommitments,
+		outputCommitmentSums,
+		excessCommitmentSums,
 		overage,
 		blockHeader.GetOffset(),
 		std::nullopt
