@@ -2,6 +2,7 @@
 
 #include "Connection.h"
 
+#include <Net/SocketAddress.h>
 #include <Common/ConcurrentQueue.h>
 #include <Core/Traits/Lockable.h>
 #include <memory>
@@ -25,6 +26,7 @@ public:
 	size_t GetNumberOfActiveConnections() const { return m_connections.Read()->size(); }
 
 	bool IsConnected(const IPAddress& address) const;
+	bool IsConnected(const SocketAddress& address) const;
 	std::vector<PeerPtr> GetMostWorkPeers() const;
 	std::vector<ConnectedPeer> GetConnectedPeers() const;
 	uint64_t GetMostWork() const;

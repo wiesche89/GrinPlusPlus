@@ -36,6 +36,7 @@ public:
 	uint64_t GetHeight() const noexcept { return m_height.load(); }
 	uint32_t GetProtocolVersion() const noexcept { return m_pPeer->GetVersion(); }
 
+	void UpdatePort(const uint16_t portNumber) noexcept { m_portNumber = portNumber; }
 	void UpdateVersion(const uint32_t version) { m_pPeer->UpdateVersion(version); }
 	void UpdateCapabilities(const Capabilities& capabilities) { m_pPeer->UpdateCapabilities(capabilities); }
 	void UpdateUserAgent(const std::string& userAgent) { m_pPeer->UpdateUserAgent(userAgent); }

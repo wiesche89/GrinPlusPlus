@@ -33,7 +33,6 @@ std::shared_ptr<PeerDB> PeerDB::OpenDB(const Config& config)
 
 	// open DB
 	const fs::path dbPath = config.GetDatabasePath() / "PEERS";
-	fs::remove_all(dbPath);
 	fs::create_directories(dbPath);
 
 	DB* pDatabase = nullptr;
@@ -70,7 +69,7 @@ std::optional<PeerPtr> PeerDB::GetPeer(const IPAddress& address, const std::opti
 	LOG_TRACE("Loading peer: " + (portOpt.has_value() ? SocketAddress(address, portOpt.value()).Format() : address.Format()));
 
 	Serializer addressSerializer;
-	if (address.IsLocalhost() && portOpt.has_value())
+	if (portOpt.has_value())
 	{
 		SocketAddress(address, portOpt.value()).Serialize(addressSerializer);
 	}
@@ -91,6 +90,22 @@ std::optional<PeerPtr> PeerDB::GetPeer(const IPAddress& address, const std::opti
 		return std::make_optional(Peer::Deserialize(byteBuffer));
 	}
 
+	if (portOpt.has_value())
+	{
+		Serializer legacyAddressSerializer;
+		address.Serialize(legacyAddressSerializer);
+		Slice legacyKey((const char*)legacyAddressSerializer.data(), legacyAddressSerializer.size());
+
+		const Status legacyStatus = m_pDatabase->Get(ReadOptions(), legacyKey, &value);
+		if (legacyStatus.ok())
+		{
+			std::vector<unsigned char> data(value.data(), value.data() + value.size());
+			ByteBuffer byteBuffer(std::move(data));
+
+			return std::make_optional(Peer::Deserialize(byteBuffer));
+		}
+	}
+
 	return std::nullopt;
 }
 
@@ -104,7 +119,11 @@ void PeerDB::SavePeers(const std::vector<PeerPtr>& peers)
 		const IPAddress& address = peer->GetIPAddress();
 
 		Serializer addressSerializer;
-		address.Serialize(addressSerializer);
+		if (peer->GetPort() > 0) {
+			SocketAddress(address, peer->GetPort()).Serialize(addressSerializer);
+		} else {
+			address.Serialize(addressSerializer);
+		}
 		Slice key((const char*)addressSerializer.data(), addressSerializer.size());
 
 		Serializer peerSerializer;
@@ -127,7 +146,11 @@ void PeerDB::DeletePeers(const std::vector<PeerPtr>& peers)
 		const IPAddress& address = peer->GetIPAddress();
 
 		Serializer addressSerializer;
-		address.Serialize(addressSerializer);
+		if (peer->GetPort() > 0) {
+			SocketAddress(address, peer->GetPort()).Serialize(addressSerializer);
+		} else {
+			address.Serialize(addressSerializer);
+		}
 		Slice key((const char*)addressSerializer.data(), addressSerializer.size());
 
 		writeBatch.Delete(key);

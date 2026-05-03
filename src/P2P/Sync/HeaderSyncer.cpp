@@ -5,6 +5,7 @@
 #include "../Messages/HeaderSegmentMessage.h"
 
 #include <Common/Logger.h>
+#include <Net/SocketAddress.h>
 #include <P2P/Capabilities.h>
 #include <P2P/Common.h>
 #include <algorithm>
@@ -76,7 +77,7 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 			m_pendingRequests.end(),
 			[pConnectionManager, now, height, &removedPendingRequest](const PendingHeaderRequest& request) {
 				if (request.pPeer == nullptr
-					|| !pConnectionManager->IsConnected(request.pPeer->GetIPAddress())
+					|| !pConnectionManager->IsConnected(SocketAddress(request.pPeer->GetIPAddress(), request.pPeer->GetPort()))
 					|| request.timeout < now) {
 					removedPendingRequest = true;
 					return true;
@@ -200,7 +201,7 @@ bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 				[pPeer](const PendingHeaderRequest& request) {
 					return request.pPeer != nullptr
 						&& pPeer != nullptr
-						&& request.pPeer->GetIPAddress() == pPeer->GetIPAddress()
+						&& SocketAddress(request.pPeer->GetIPAddress(), request.pPeer->GetPort()) == SocketAddress(pPeer->GetIPAddress(), pPeer->GetPort())
 						&& request.identifier.GetHeight() == P2P::PIHD_HEADER_SEGMENT_HEIGHT;
 				});
 			if (peerPendingCount >= PIHD_MAX_IN_FLIGHT_SEGMENTS_PER_PEER) {

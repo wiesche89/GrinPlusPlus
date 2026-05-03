@@ -5,6 +5,7 @@
 #include <Consensus.h>
 #include <Common/Logger.h>
 #include <Core/Global.h>
+#include <Net/SocketAddress.h>
 #include <PMMR/PIBDParams.h>
 
 #include <algorithm>
@@ -22,9 +23,9 @@ static uint64_t GetConnectedPeerHeight(const std::vector<ConnectedPeer>& connect
 		return 0;
 	}
 
-	const std::string peerAddress = pPeer->GetIPAddress().Format();
 	for (const ConnectedPeer& connectedPeer : connectedPeers) {
-		if (connectedPeer.GetPeer() != nullptr && connectedPeer.GetIPAddress().Format() == peerAddress) {
+		if (connectedPeer.GetPeer() != nullptr
+			&& connectedPeer.GetSocketAddress() == SocketAddress(pPeer->GetIPAddress(), pPeer->GetPort())) {
 			return connectedPeer.GetHeight();
 		}
 	}
@@ -135,7 +136,7 @@ bool StateSyncer::IsStateSyncDue(const SyncStatus& syncStatus) const
 	}
 
 	const auto pConnectionManager = m_pConnectionManager.lock();
-	if (m_pPeer != nullptr && (pConnectionManager == nullptr || !pConnectionManager->IsConnected(m_pPeer->GetIPAddress())))
+	if (m_pPeer != nullptr && (pConnectionManager == nullptr || !pConnectionManager->IsConnected(SocketAddress(m_pPeer->GetIPAddress(), m_pPeer->GetPort()))))
 	{
 		LOG_WARNING("Sync peer no longer connected.");
 		return true;
@@ -162,7 +163,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			return false;
 		}
 
-		if (!pConnectionManager->IsConnected(m_pPeer->GetIPAddress())
+		if (!pConnectionManager->IsConnected(SocketAddress(m_pPeer->GetIPAddress(), m_pPeer->GetPort()))
 			|| !m_pPeer->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)) {
 			LOG_WARNING(StringUtil::Format("PIBD peer {} is no longer eligible, selecting a new peer.", m_pPeer));
 			m_pPipeline->ClearPIBDRequests();
@@ -206,7 +207,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 					for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
 						if (cp.GetPeer() != nullptr
 							&& cp.GetPeer() != m_pPeer
-							&& pConnectionManager->IsConnected(cp.GetIPAddress())
+							&& pConnectionManager->IsConnected(cp.GetSocketAddress())
 							&& cp.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
 							&& cp.GetHeight() >= minPeerHeight) {
 							hasAlternativePIBDPeer = true;
@@ -215,7 +216,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 					}
 
 					if (hasAlternativePIBDPeer) {
-						m_blockedPIBDPeers[m_pPeer->GetIPAddress().Format()] = std::chrono::steady_clock::now() + PIBD_STALLED_PEER_BACKOFF;
+						m_blockedPIBDPeers[SocketAddress(m_pPeer->GetIPAddress(), m_pPeer->GetPort()).Format()] = std::chrono::steady_clock::now() + PIBD_STALLED_PEER_BACKOFF;
 						m_pPipeline->ClearPIBDRequests();
 						m_pPeer = nullptr;
 					} else {
@@ -240,7 +241,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 			for (ConnectedPeer& cp : pConnectionManager->GetConnectedPeers()) {
 				if (cp.GetPeer() != nullptr
 					&& cp.GetPeer() != m_pPeer
-					&& pConnectionManager->IsConnected(cp.GetIPAddress())
+					&& pConnectionManager->IsConnected(cp.GetSocketAddress())
 					&& cp.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
 					&& cp.GetHeight() >= minPeerHeight) {
 					activePibdPeers.push_back(cp.GetPeer());
@@ -303,9 +304,9 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 
 	std::vector<ConnectedPeer*> pibdPeers;
 	for (ConnectedPeer& peer : connectedPeers) {
-		const std::string peerAddress = peer.GetIPAddress().Format();
+		const std::string peerAddress = peer.GetSocketAddress().Format();
 		if (peer.GetPeer() != nullptr
-			&& pConnectionManager->IsConnected(peer.GetIPAddress())
+			&& pConnectionManager->IsConnected(peer.GetSocketAddress())
 			&& peer.GetPeer()->GetCapabilities().HasCapability(Capabilities::PIBD_HIST_1)
 			&& peer.GetHeight() >= minPeerHeight
 			&& m_blockedPIBDPeers.find(peerAddress) == m_blockedPIBDPeers.end()) {

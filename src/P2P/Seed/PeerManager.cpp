@@ -33,19 +33,18 @@ std::shared_ptr<Locked<PeerManager>> PeerManager::Create(const Context::Ptr& pCo
         for (const SocketAddress& address : Global::GetConfig().GetPreferredPeerAddresses()) {
             try {
                 const PeerPtr& peer = std::make_shared<Peer>(address.GetIPAddress(), address.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "");
-                pPeerManager->m_peersByAddress.emplace(peer->GetIPAddress(), PeerEntry(peer));
+                pPeerManager->m_peersByAddress.emplace(address, PeerEntry(peer));
             }
             catch (std::exception& e) {
                 LOG_ERROR_F("Exception thrown: {}", e.what());
             }
         }
     } 
-    else {
-        LOG_INFO("Getting peers from database...");
-        const std::vector<PeerPtr> peers = pPeerDB->Read()->LoadAllPeers();
-        for (const PeerPtr& peer : peers) {
-            pPeerManager->m_peersByAddress.emplace(peer->GetIPAddress(), PeerEntry(peer));
-        }
+
+    LOG_INFO("Getting peers from database...");
+    const std::vector<PeerPtr> peers = pPeerDB->Read()->LoadAllPeers();
+    for (const PeerPtr& peer : peers) {
+        pPeerManager->m_peersByAddress.emplace(SocketAddress(peer->GetIPAddress(), peer->GetPort()), PeerEntry(peer));
     }
     
     std::shared_ptr<Locked<PeerManager>> pLocked = std::make_shared<Locked<PeerManager>>(Locked<PeerManager>(pPeerManager));
@@ -70,6 +69,14 @@ void PeerManager::Thread_ManagePeers(PeerManager& peerManager)
     LOG_TRACE("BEGIN");
 
     try {
+        std::map<SocketAddress, PeerEntry> peersBySocketAddress;
+        for (const auto& iter : peerManager.m_peersByAddress)
+        {
+            const PeerPtr& peer = iter.second.m_peer;
+            peersBySocketAddress.emplace(SocketAddress(peer->GetIPAddress(), peer->GetPort()), iter.second);
+        }
+        peerManager.m_peersByAddress.swap(peersBySocketAddress);
+
         std::vector<PeerPtr> peersToUpdate;
         std::vector<PeerPtr> peersToDelete;
 
@@ -95,9 +102,16 @@ void PeerManager::Thread_ManagePeers(PeerManager& peerManager)
             }
         }
 
-        for (PeerPtr pPeer : peersToDelete)
+        for (const PeerPtr& pPeer : peersToDelete)
         {
-            peerManager.m_peersByAddress.erase(pPeer->GetIPAddress());
+            for (auto iter = peerManager.m_peersByAddress.begin(); iter != peerManager.m_peersByAddress.end(); )
+            {
+                if (iter->second.m_peer == pPeer) {
+                    iter = peerManager.m_peersByAddress.erase(iter);
+                } else {
+                    ++iter;
+                }
+            }
         }
 
         peerManager.m_pPeerDB->Write()->SavePeers(peersToUpdate);
@@ -110,23 +124,41 @@ void PeerManager::Thread_ManagePeers(PeerManager& peerManager)
     LOG_TRACE("END");
 }
 
-PeerPtr PeerManager::GetPeer(const IPAddress& address)
+PeerPtr PeerManager::GetPeer(const SocketAddress& address)
 {
     auto iter = m_peersByAddress.find(address);
     if (iter != m_peersByAddress.cend()) {
         return iter->second.m_peer;
     }
 
-    PeerPtr pPeer = std::make_shared<Peer>(address);
+    if (address.GetPortNumber() > 0) {
+        const SocketAddress addressWithoutPort(address.GetIPAddress(), 0);
+        auto peerWithoutPort = m_peersByAddress.find(addressWithoutPort);
+        if (peerWithoutPort != m_peersByAddress.end()) {
+            PeerEntry entry = peerWithoutPort->second;
+            entry.m_peer->UpdatePort(address.GetPortNumber());
+            m_peersByAddress.erase(peerWithoutPort);
+            m_peersByAddress.emplace(address, entry);
+            return entry.m_peer;
+        }
+    }
+
+    PeerPtr pPeer = std::make_shared<Peer>(address.GetIPAddress(), address.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "");
     m_peersByAddress.emplace(address, PeerEntry(pPeer));
     return pPeer;
 }
 
+PeerPtr PeerManager::GetPeer(const IPAddress& address)
+{
+    return GetPeer(SocketAddress(address, 0));
+}
+
 std::optional<PeerConstPtr> PeerManager::GetPeer(const IPAddress& address) const
 {
-    auto iter = m_peersByAddress.find(address);
-    if (iter != m_peersByAddress.cend()) {
-        return std::make_optional(iter->second.m_peer);
+    for (const auto& entry : m_peersByAddress) {
+        if (entry.second.m_peer->GetIPAddress() == address) {
+            return std::make_optional(entry.second.m_peer);
+        }
     }
 
     return m_pPeerDB->Read()->GetPeer(address, std::nullopt);
@@ -187,10 +219,11 @@ std::vector<PeerPtr> PeerManager::GetPeers(
 void PeerManager::AddFreshPeers(const std::vector<SocketAddress>& peerAddresses)
 {
     for (auto& socketAddress : peerAddresses) {
-        const IPAddress& ipAddress = socketAddress.GetIPAddress();
-        auto iter = m_peersByAddress.find(ipAddress);
+        auto iter = m_peersByAddress.find(socketAddress);
         if (iter == m_peersByAddress.end()) {
-            m_peersByAddress.emplace(ipAddress, PeerEntry(std::make_shared<Peer>(ipAddress, socketAddress.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "")));
+            PeerPtr peer = std::make_shared<Peer>(socketAddress.GetIPAddress(), socketAddress.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "");
+            peer->SetDirty(true);
+            m_peersByAddress.emplace(socketAddress, PeerEntry(peer));
         } else if (iter->second.m_peer->GetPort() == 0 && socketAddress.GetPortNumber() > 0) {
             iter->second.m_peer->UpdatePort(socketAddress.GetPortNumber());
         }
@@ -199,21 +232,27 @@ void PeerManager::AddFreshPeers(const std::vector<SocketAddress>& peerAddresses)
 
 void PeerManager::BanPeer(const IPAddress& address, const EBanReason banReason)
 {
-    auto iter = m_peersByAddress.find(address);
-    if (iter != m_peersByAddress.end()) {
-        iter->second.m_peer->Ban(banReason);
-    } else {
+    bool found = false;
+    for (auto& entry : m_peersByAddress) {
+        if (entry.second.m_peer->GetIPAddress() == address) {
+            entry.second.m_peer->Ban(banReason);
+            found = true;
+        }
+    }
+
+    if (!found) {
         PeerPtr peer = std::make_shared<Peer>(address, 0, 0, Capabilities(0), "");
         peer->Ban(banReason);
-        m_peersByAddress.emplace(address, PeerEntry(peer, TimeUtil::Now()));
+        m_peersByAddress.emplace(SocketAddress(address, 0), PeerEntry(peer, TimeUtil::Now()));
     }
 }
 
 void PeerManager::UnbanPeer(const IPAddress& address)
 {
-    auto iter = m_peersByAddress.find(address);
-    if (iter != m_peersByAddress.end()) {
-        iter->second.m_peer->Unban();
+    for (auto& entry : m_peersByAddress) {
+        if (entry.second.m_peer->GetIPAddress() == address) {
+            entry.second.m_peer->Unban();
+        }
     }
 }
 

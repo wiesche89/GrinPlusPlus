@@ -76,6 +76,19 @@ bool ConnectionManager::IsConnected(const IPAddress& address) const
 	);
 }
 
+bool ConnectionManager::IsConnected(const SocketAddress& address) const
+{
+	auto connections = m_connections.Read();
+	return std::any_of(
+		connections->cbegin(),
+		connections->cend(),
+		[&address](const ConnectionPtr& pConnection)
+		{
+			return pConnection->GetSocketAddress() == address && pConnection->IsConnectionActive();
+		}
+	);
+}
+
 std::vector<PeerPtr> ConnectionManager::GetMostWorkPeers() const
 {
 	std::vector<PeerPtr> mostWorkPeers;
@@ -147,7 +160,7 @@ bool ConnectionManager::SendMessageToPeer(const IMessage& message, PeerConstPtr 
 {
 	auto connections = *m_connections.Read().GetShared();
 	for (auto pConnection : connections) {
-		if (pConnection->GetIPAddress() == pPeer->GetIPAddress() && pConnection->IsConnectionActive()) {
+		if (pConnection->GetSocketAddress() == SocketAddress(pPeer->GetIPAddress(), pPeer->GetPort()) && pConnection->IsConnectionActive()) {
 			pConnection->SendAsync(message);
 			return true;
 		}

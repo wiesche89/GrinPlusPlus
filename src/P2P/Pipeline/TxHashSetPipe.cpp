@@ -11,6 +11,7 @@
 #include <Common/Logger.h>
 #include <Core/File/FileRemover.h>
 #include <Core/Global.h>
+#include <Net/SocketAddress.h>
 #include <BlockChain/BlockChain.h>
 #include <PMMR/TxHashSet.h>
 #include <PMMR/PIBDParams.h>
@@ -62,9 +63,9 @@ static uint64_t GetPeerReportedHeight(const std::shared_ptr<ConnectionManager>& 
 		return 0;
 	}
 
-	const std::string peerAddress = pPeer->GetIPAddress().Format();
 	for (const ConnectedPeer& connectedPeer : pConnectionManager->GetConnectedPeers()) {
-		if (connectedPeer.GetPeer() != nullptr && connectedPeer.GetIPAddress().Format() == peerAddress) {
+		if (connectedPeer.GetPeer() != nullptr
+			&& connectedPeer.GetSocketAddress() == SocketAddress(pPeer->GetIPAddress(), pPeer->GetPort())) {
 			return connectedPeer.GetHeight();
 		}
 	}
@@ -893,12 +894,12 @@ bool TxHashSetPipe::RequestNextPIBDSegments(const std::shared_ptr<ConnectionMana
 			const PeerConstPtr& pCurrentPeer = requestPeers[(peerIdx + attempt) % requestPeers.size()];
 			if (previousRequest.has_value()
 				&& requestPeers.size() > 1
-				&& previousRequest->peerId == pCurrentPeer->GetIPAddress().Format()) {
+				&& previousRequest->peerId == SocketAddress(pCurrentPeer->GetIPAddress(), pCurrentPeer->GetPort()).Format()) {
 				continue;
 			}
 
 			if (pConnectionManager->SendMessageToPeer(*pMessage, pCurrentPeer)) {
-				m_segmentRequests.AddOrRefresh(typeId, pCurrentPeer->GetIPAddress().Format());
+				m_segmentRequests.AddOrRefresh(typeId, SocketAddress(pCurrentPeer->GetIPAddress(), pCurrentPeer->GetPort()).Format());
 				const BlockHeader& archiveHeader = m_pDesegmenter->GetArchiveHeader();
 				const uint64_t peerHeight = GetPeerReportedHeight(pConnectionManager, pCurrentPeer);
 				LOG_TRACE(StringUtil::Format("Requested PIBD {} segment {}:{} for archive {}:{} from {} (peer_height={}).",

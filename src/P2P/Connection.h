@@ -8,6 +8,7 @@
 #include <Net/Socket.h>
 #include <P2P/ConnectedPeer.h>
 #include <P2P/SyncStatus.h>
+#include <Net/SocketAddress.h>
 #include <Core/Config.h>
 #include <chrono>
 #include <atomic>
@@ -76,6 +77,7 @@ public:
 	PeerConstPtr GetPeer() const { return m_connectedPeer.GetPeer(); }
 	const ConnectedPeer& GetConnectedPeer() const { return m_connectedPeer; }
 	const IPAddress& GetIPAddress() const { return GetPeer()->GetIPAddress(); }
+	SocketAddress GetSocketAddress() const { return m_connectedPeer.GetSocketAddress(); }
 	uint64_t GetTotalDifficulty() const { return m_connectedPeer.GetTotalDifficulty(); }
 	uint64_t GetHeight() const { return m_connectedPeer.GetHeight(); }
 	Capabilities GetCapabilities() const { return m_connectedPeer.GetPeer()->GetCapabilities(); }
@@ -83,7 +85,7 @@ public:
 	const EDirection GetDirection() const noexcept { return m_connectedPeer.GetDirection(); }
 	void UpdateTotals(const uint64_t totalDifficulty, const uint64_t height) { m_connectedPeer.UpdateTotals(totalDifficulty, height); }
 
-	std::string Format() const final { return "Connection{" + GetIPAddress().Format() + "}"; }
+	std::string Format() const final { return "Connection{" + GetSocketAddress().Format() + "}"; }
 
 	bool HasBlock(const Hash& hash) const { return m_advertisedBlocks.Cached(hash); }
 	void AdvertisedBlock(const Hash& hash) { return m_advertisedBlocks.Put(hash, hash); }

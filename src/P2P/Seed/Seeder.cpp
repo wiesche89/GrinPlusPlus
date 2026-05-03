@@ -85,13 +85,11 @@ void Seeder::Thread_Seed(Seeder& seeder)
 
             auto now = std::chrono::system_clock::now();
             const size_t numOutbound = seeder.m_connectionManager.GetNumOutbound();
-            const bool hasPreferredPeers = !Global::GetConfig().GetPreferredPeers().empty();
-
             // Refresh DNS more aggressively when we have very few peers
             const auto dnsInterval = numOutbound == 0
                 ? std::chrono::seconds(30)
                 : std::chrono::minutes(5);
-            if (!hasPreferredPeers && numOutbound < minimumConnections && lastDNSTime + dnsInterval < now) {
+            if (numOutbound < minimumConnections && lastDNSTime + dnsInterval < now) {
                 lastDNSTime = now;
                 LOG_INFO("Refreshing peers from DNS seeders");
                 std::vector<SocketAddress> peerAddresses = DNSSeeder::GetPeersFromDNS();
@@ -158,7 +156,7 @@ void Seeder::Accept(const asio::error_code& ec)
             asio::error_code ignoreError;
             m_pSocket->close(ignoreError);
         } else {
-            auto pPeer = m_peerManager.Write()->GetPeer(pSocket->GetIPAddress());
+            auto pPeer = m_peerManager.Write()->GetPeer(pSocket->GetSocketAddress());
 
             if (!pPeer->IsBanned()) {
                 auto pConnection = std::make_shared<Connection>(
@@ -211,11 +209,6 @@ void Seeder::SeedNewConnection()
             return;
         }
 
-        if (!Global::GetConfig().IsPeerPreferred(pSocket->GetIPAddress())) {
-            LOG_TRACE_F("peer is not in preferred pool of peers: {}", pSocket->GetIPAddress());        
-            return;
-        }
-        
         ConnectionPtr pConnection = std::make_shared<Connection>(
             pSocket,
             m_nextId++,

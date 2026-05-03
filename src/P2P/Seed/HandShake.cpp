@@ -75,14 +75,16 @@ void HandShake::PerformInboundHandshake(const Socket::Ptr& pSocket, ConnectedPee
         throw PROTOCOL_EXCEPTION("Connected to self");
     }
 
-    if (m_connectionManager.IsConnected(connectedPeer.GetIPAddress())) {
+    connectedPeer.UpdatePort(hand_message.GetSenderAddress().GetPortNumber());
+    connectedPeer.GetPeer()->UpdatePort(hand_message.GetSenderAddress().GetPortNumber());
+
+    if (m_connectionManager.IsConnected(connectedPeer.GetSocketAddress())) {
         throw PROTOCOL_EXCEPTION("Already connected to peer");
     }
 
     connectedPeer.UpdateCapabilities(hand_message.GetCapabilities());
     connectedPeer.UpdateUserAgent(hand_message.GetUserAgent());
     connectedPeer.UpdateTotals(hand_message.GetTotalDifficulty(), 0);
-    connectedPeer.GetPeer()->UpdatePort(hand_message.GetSenderAddress().GetPortNumber());
 
     uint32_t version = (std::min)(P2P::PROTOCOL_VERSION, hand_message.GetVersion());
     connectedPeer.UpdateVersion(version);

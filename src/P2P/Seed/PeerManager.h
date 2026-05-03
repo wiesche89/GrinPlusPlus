@@ -10,6 +10,7 @@
 #include <Core/Traits/Lockable.h>
 
 #include <optional>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -25,6 +26,7 @@ public:
 	static std::shared_ptr<Locked<PeerManager>> Create(const std::shared_ptr<Context>& pContext, std::shared_ptr<Locked<IPeerDB>> pPeerDB);
 	~PeerManager();
 
+	PeerPtr GetPeer(const SocketAddress& address);
 	PeerPtr GetPeer(const IPAddress& address);
 	std::optional<PeerConstPtr> GetPeer(const IPAddress& address) const;
 
@@ -69,5 +71,5 @@ private:
 	std::shared_ptr<Context> m_pContext;
 	std::shared_ptr<Locked<IPeerDB>> m_pPeerDB;
 
-	mutable std::map<IPAddress, PeerEntry> m_peersByAddress;
+	mutable std::map<SocketAddress, PeerEntry> m_peersByAddress;
 };
