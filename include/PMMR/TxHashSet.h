@@ -156,6 +156,8 @@ public:
 		const uint64_t numOutputs
 	) const = 0;
 
+	virtual BitmapAccumulator GetOutputBitmapAccumulator() const = 0;
+
 	virtual std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> GetRangeProofSegment(
 		const SegmentIdentifier& identifier
 	) const = 0;
@@ -166,12 +168,14 @@ public:
 
 	virtual bool ApplyOutputSegment(
 		const Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>& segment,
-		const uint64_t targetMMRSize
+		const uint64_t targetMMRSize,
+		const BitmapAccumulator* pBitmap
 	) = 0;
 
 	virtual bool ApplyRangeProofSegment(
 		const Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>& segment,
-		const uint64_t targetMMRSize
+		const uint64_t targetMMRSize,
+		const BitmapAccumulator* pBitmap
 	) = 0;
 
 	virtual bool ApplyKernelSegment(

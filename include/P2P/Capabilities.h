@@ -13,8 +13,9 @@ public:
 		// We don't know (yet) what the peer can do.
 		UNKNOWN = 0x00,
 
-		// Full archival node, has the whole history without any pruning.
-		FULL_HIST = 0x01,
+		// Can provide block headers.
+		HEADER_HIST = 0x01,
+		FULL_HIST = HEADER_HIST,
 
 		// Can provide block headers and the TxHashSet for some recent-enough height.
 		TXHASHET_HIST = 0x02, // LIGHT_CLIENT: We can prune old range-proofs and drop unnecessary rangeproof hashes if this isn't set
@@ -32,8 +33,8 @@ public:
 		// Can provide block header ranges by segment for parallel initial header download.
 		PIHD_HIST = 0x80,
 
-		FAST_SYNC_NODE = (TXHASHET_HIST | PEER_LIST),
-		PIBD_FAST_SYNC_NODE = (FAST_SYNC_NODE | PIBD_HIST_1),
+		FAST_SYNC_NODE = (HEADER_HIST | TXHASHET_HIST | PEER_LIST),
+		PIBD_FAST_SYNC_NODE = (FAST_SYNC_NODE | PIBD_HIST | PIBD_HIST_1),
 		PIHD_FAST_SYNC_NODE = (PIBD_FAST_SYNC_NODE | PIHD_HIST),
 
 		ARCHIVE_NODE = (FULL_HIST | TXHASHET_HIST | PEER_LIST)

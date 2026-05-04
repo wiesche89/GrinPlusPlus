@@ -32,6 +32,15 @@ class Connection : public Traits::IPrintable, public std::enable_shared_from_thi
 public:
 	using Ptr = std::shared_ptr<Connection>;
 
+	enum class EInactiveReason
+	{
+		NONE,
+		TERMINATED,
+		APPLICATION_IDLE,
+		BANNED,
+		SOCKET_INACTIVE
+	};
+
 	Connection(
 		const SocketPtr& pSocket,
 		const uint64_t connectionId,
@@ -60,6 +69,7 @@ public:
 
 	uint64_t GetId() const { return m_connectionId; }
 	bool IsConnectionActive() const;
+	EInactiveReason GetInactiveReason() const;
 
 	void DisableSends(bool disabled) { m_sendingDisabled = disabled; }
 	void SendAsync(const IMessage& message);

@@ -68,7 +68,21 @@ std::shared_ptr<KernelMMR> KernelMMR::Load(const fs::path& txHashSetPath, const 
 
 	if (!useVariableFormat) {
 		auto pDataFile = DataFile<KERNEL_SIZE>::Load(rawPath);
-		return std::make_shared<KernelMMR>(pHashFile, pDataFile);
+		auto pKernelMMR = std::make_shared<KernelMMR>(pHashFile, pDataFile);
+		if (includeGenesis && pKernelMMR->GetSize() >= 1) {
+			const auto pGenesisKernel = pKernelMMR->GetKernelAt(LeafIndex::At(0));
+			const Hash genesisRoot = Global::GetGenesisHeader()->GetKernelRoot();
+			if (pGenesisKernel == nullptr || pKernelMMR->Root(1) != genesisRoot) {
+				if (pKernelMMR->GetSize() == 1) {
+					LOG_WARNING("Kernel PMMR genesis entry is inconsistent; rebuilding genesis kernel.");
+					pKernelMMR->Rewind(0);
+					pKernelMMR->ApplyKernel(Global::GetGenesisBlock().GetKernels().front());
+				} else {
+					LOG_WARNING_F("Kernel PMMR genesis entry is inconsistent in non-empty PMMR with size {}.", pKernelMMR->GetSize());
+				}
+			}
+		}
+		return pKernelMMR;
 	}
 
 	auto pRawFile = std::make_shared<AppendOnlyFile>(rawPath);
@@ -78,6 +92,19 @@ std::shared_ptr<KernelMMR> KernelMMR::Load(const fs::path& txHashSetPath, const 
 	auto pKernelMMR = std::make_shared<KernelMMR>(pHashFile, pRawFile, pOffsetFile);
 	if (!hasOffsetFile) {
 		pKernelMMR->BuildKernelOffsetsFromRawFile();
+	}
+	if (includeGenesis && pKernelMMR->GetSize() >= 1) {
+		const auto pGenesisKernel = pKernelMMR->GetKernelAt(LeafIndex::At(0));
+		const Hash genesisRoot = Global::GetGenesisHeader()->GetKernelRoot();
+		if (pGenesisKernel == nullptr || pKernelMMR->Root(1) != genesisRoot) {
+			if (pKernelMMR->GetSize() == 1) {
+				LOG_WARNING("Kernel PMMR genesis entry is inconsistent; rebuilding genesis kernel.");
+				pKernelMMR->Rewind(0);
+				pKernelMMR->ApplyKernel(Global::GetGenesisBlock().GetKernels().front());
+			} else {
+				LOG_WARNING_F("Kernel PMMR genesis entry is inconsistent in non-empty PMMR with size {}.", pKernelMMR->GetSize());
+			}
+		}
 	}
 	return pKernelMMR;
 }

@@ -71,13 +71,15 @@ public:
 	}
 	uint64_t GetCompletedLeaves() const noexcept
 	{
-		return MMRUtil::CountLeaves(m_appliedOutputMMRSize)
+		return MMRUtil::CountLeaves(m_appliedBitmapMMRSize)
+			+ MMRUtil::CountLeaves(m_appliedOutputMMRSize)
 			+ MMRUtil::CountLeaves(m_appliedRangeProofMMRSize)
 			+ MMRUtil::CountLeaves(m_appliedKernelMMRSize);
 	}
 	uint64_t GetLeavesRequired() const noexcept
 	{
-		return (MMRUtil::CountLeaves(m_archiveHeader.GetOutputMMRSize()) * 2)
+		return MMRUtil::CountLeaves(m_bitmapMMRSize)
+			+ (MMRUtil::CountLeaves(m_archiveHeader.GetOutputMMRSize()) * 2)
 			+ MMRUtil::CountLeaves(m_archiveHeader.GetKernelMMRSize());
 	}
 	uint64_t GetRequiredHeight() const noexcept { return m_archiveHeader.GetHeight(); }
@@ -203,10 +205,43 @@ public:
 		}
 
 		if (!m_bitmapCacheComplete) {
+			LOG_WARNING(StringUtil::Format("PIBD rangeproof segment {}:{} received before output bitmap was complete.",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex()));
 			return false;
 		}
 
-		if (!segment.Validate(m_archiveHeader.GetOutputMMRSize(), m_archiveHeader.GetRangeProofRoot(), &m_bitmapAccumulator)) {
+		const std::optional<std::pair<Hash, uint64_t>> firstUnprunedParent = segment.FirstUnprunedParent(
+			m_archiveHeader.GetOutputMMRSize(),
+			&m_bitmapAccumulator);
+		const std::pair<uint64_t, uint64_t> posRange = segment.GetPositionRange(m_archiveHeader.GetOutputMMRSize());
+		const std::optional<Hash> reconstructedRoot = firstUnprunedParent.has_value()
+			? segment.GetProof().ReconstructRoot(
+				m_archiveHeader.GetOutputMMRSize(),
+				posRange.first,
+				posRange.second,
+				firstUnprunedParent->first,
+				firstUnprunedParent->second)
+			: std::nullopt;
+		if (!firstUnprunedParent.has_value()
+			|| !reconstructedRoot.has_value()
+			|| reconstructedRoot.value() != m_archiveHeader.GetRangeProofRoot()) {
+			LOG_WARNING(StringUtil::Format("PIBD rangeproof segment {}:{} failed proof validation (version={}, output_mmr_size={}, range={}..{}, leaves={}, hashes={}, proof_hashes={}, segment_root={}, unpruned_pos={}, reconstructed_rangeproof_root={}, header_rangeproof_root={}, bitmap_chunks={}, bitmap_mmr_size={}).",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex(),
+				(uint32_t)m_archiveHeader.GetVersion(),
+				m_archiveHeader.GetOutputMMRSize(),
+				posRange.first,
+				posRange.second,
+				segment.GetLeaves().size(),
+				segment.GetHashes().size(),
+				segment.GetProof().GetHashes().size(),
+				firstUnprunedParent.has_value() ? firstUnprunedParent->first.ToHex() : std::string("null"),
+				firstUnprunedParent.has_value() ? firstUnprunedParent->second : 0,
+				reconstructedRoot.has_value() ? reconstructedRoot->ToHex() : std::string("null"),
+				m_archiveHeader.GetRangeProofRoot(),
+				m_bitmapAccumulator.GetChunks().size(),
+				m_bitmapAccumulator.GetMMRSize()));
 			return false;
 		}
 
@@ -220,7 +255,34 @@ public:
 			return false;
 		}
 
-		if (!segment.Validate(m_archiveHeader.GetKernelMMRSize(), m_archiveHeader.GetKernelRoot())) {
+		const std::optional<std::pair<Hash, uint64_t>> firstUnprunedParent = segment.FirstUnprunedParent(
+			m_archiveHeader.GetKernelMMRSize());
+		const std::pair<uint64_t, uint64_t> posRange = segment.GetPositionRange(m_archiveHeader.GetKernelMMRSize());
+		const std::optional<Hash> reconstructedRoot = firstUnprunedParent.has_value()
+			? segment.GetProof().ReconstructRoot(
+				m_archiveHeader.GetKernelMMRSize(),
+				posRange.first,
+				posRange.second,
+				firstUnprunedParent->first,
+				firstUnprunedParent->second)
+			: std::nullopt;
+		if (!firstUnprunedParent.has_value()
+			|| !reconstructedRoot.has_value()
+			|| reconstructedRoot.value() != m_archiveHeader.GetKernelRoot()) {
+			LOG_WARNING(StringUtil::Format("PIBD kernel segment {}:{} failed proof validation (version={}, kernel_mmr_size={}, range={}..{}, leaves={}, hashes={}, proof_hashes={}, segment_root={}, unpruned_pos={}, reconstructed_kernel_root={}, header_kernel_root={}).",
+				segment.GetIdentifier().GetHeight(),
+				segment.GetIdentifier().GetIndex(),
+				(uint32_t)m_archiveHeader.GetVersion(),
+				m_archiveHeader.GetKernelMMRSize(),
+				posRange.first,
+				posRange.second,
+				segment.GetLeaves().size(),
+				segment.GetHashes().size(),
+				segment.GetProof().GetHashes().size(),
+				firstUnprunedParent.has_value() ? firstUnprunedParent->first.ToHex() : std::string("null"),
+				firstUnprunedParent.has_value() ? firstUnprunedParent->second : 0,
+				reconstructedRoot.has_value() ? reconstructedRoot->ToHex() : std::string("null"),
+				m_archiveHeader.GetKernelRoot()));
 			return false;
 		}
 

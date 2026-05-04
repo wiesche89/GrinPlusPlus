@@ -25,11 +25,19 @@ enum class ESyncStatus
 	NOT_SYNCING
 };
 
+enum class EHeaderSyncType
+{
+	UNKNOWN,
+	LEGACY,
+	PIHD
+};
+
 class SyncStatus
 {
 public:
 	SyncStatus()
 		: m_syncStatus(ESyncStatus::SYNCING_HEADERS),
+		m_headerSyncType(EHeaderSyncType::UNKNOWN),
 		m_numActiveConnections(0),
 		m_networkHeight(0),
 		m_networkDifficulty(0),
@@ -54,6 +62,7 @@ public:
 	}
 	SyncStatus(const SyncStatus& other)
 		: m_syncStatus(other.m_syncStatus.load()),
+		m_headerSyncType(other.m_headerSyncType.load()),
 		m_numActiveConnections(other.m_numActiveConnections.load()),
 		m_networkHeight(other.m_networkHeight.load()),
 		m_networkDifficulty(other.m_networkDifficulty.load()),
@@ -79,6 +88,7 @@ public:
 
 	bool IsSyncing() const { return m_syncStatus != ESyncStatus::NOT_SYNCING; }
 	ESyncStatus GetStatus() const { return m_syncStatus; }
+	EHeaderSyncType GetHeaderSyncType() const { return m_headerSyncType; }
 	uint64_t GetNumActiveConnections() const { return m_numActiveConnections; }
 	uint64_t GetNetworkHeight() const { return m_networkHeight; }
 	uint64_t GetNetworkDifficulty() const { return m_networkDifficulty; }
@@ -121,6 +131,11 @@ public:
 		m_syncStatus = syncStatus;
 		m_txHashSetProcessingCurrent = 0;
 		m_txHashSetProcessingTotal = 0;
+	}
+
+	void UpdateHeaderSyncType(const EHeaderSyncType headerSyncType)
+	{
+		m_headerSyncType = headerSyncType;
 	}
 
 	void UpdateNetworkStatus(const uint64_t numActiveConnections, const uint64_t networkHeight, const uint64_t networkDifficulty)
@@ -174,6 +189,7 @@ public:
 
 private:
 	std::atomic<ESyncStatus> m_syncStatus;
+	std::atomic<EHeaderSyncType> m_headerSyncType;
 	std::atomic<uint64_t> m_numActiveConnections;
 	std::atomic<uint64_t> m_networkHeight;
 	std::atomic<uint64_t> m_networkDifficulty;

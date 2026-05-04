@@ -1,8 +1,10 @@
 #pragma once
 
 #include "../Messages/SegmentResponseMessage.h"
+#include "PIBDValidationJob.h"
 #include <P2P/SyncStatus.h>
 #include <Crypto/Models/Hash.h>
+#include <Core/Global.h>
 #include <Net/Socket.h>
 #include <P2P/Peer.h>
 #include <BlockChain/BlockChain.h>
@@ -19,6 +21,8 @@
 #include <optional>
 #include <limits>
 #include <chrono>
+#include <map>
+#include <set>
 
 // Forward Declarations
 class ConnectionManager;
@@ -67,11 +71,22 @@ public:
 	void ClearPIBDRequests();
 	void AbortPIBD();
 	bool IsPIBDComplete() const;
+	bool IsPIBDValidationRunning() const;
 
 private:
 	void UpdatePIBDStatus(const bool aborted = false, const bool errored = false);
 	uint64_t GetPIBDCompletedToHeight() const;
 	ITxHashSetConstPtr GetSegmentTxHashSet(const Hash& blockHash);
+	void MarkOutputBitmapSegmentServed(
+		const std::shared_ptr<Connection>& pConnection,
+		const Hash& blockHash,
+		const SegmentIdentifier& identifier,
+		const uint64_t bitmapMMRSize);
+	bool ShouldDeferTxHashSetDataSegment(
+		const std::shared_ptr<Connection>& pConnection,
+		const Hash& blockHash,
+		const SegmentIdentifier& requestedIdentifier,
+		const uint64_t bitmapMMRSize) const;
 
 	TxHashSetPipe(
 		const std::shared_ptr<ConnectionManager>& pConnectionManager,
@@ -82,12 +97,23 @@ private:
 		m_pBlockChain(pBlockChain),
 		m_pTxHashSetManager(std::move(pTxHashSetManager)),
 		m_pSyncStatus(pSyncStatus),
+		m_pPIBDValidationJob(std::make_unique<PIBDValidationJob>(
+			pBlockChain,
+			pSyncStatus,
+			[this](EBlockChainStatus status) {
+				m_processing = false;
+				if (status != EBlockChainStatus::SUCCESS && Global::IsRunning()) {
+					std::lock_guard<std::mutex> lock(m_pibdMutex);
+					UpdatePIBDStatus(false, true);
+				}
+			})),
 		m_processing(false) { }
 
 	std::shared_ptr<ConnectionManager> m_pConnectionManager;
 	IBlockChain::Ptr m_pBlockChain;
 	std::shared_ptr<Locked<TxHashSetManager>> m_pTxHashSetManager;
 	SyncStatusPtr m_pSyncStatus;
+	std::unique_ptr<PIBDValidationJob> m_pPIBDValidationJob;
 
 	static void Thread_ProcessTxHashSet(
 		TxHashSetPipe& pipeline,
@@ -120,4 +146,11 @@ private:
 	mutable std::mutex m_pibdSegmentTxHashSetMutex;
 	std::optional<Hash> m_pibdSegmentTxHashSetHash;
 	ITxHashSetPtr m_pibdSegmentTxHashSet;
+	struct ServedOutputBitmapState
+	{
+		std::set<uint64_t> segmentIndices;
+		std::optional<std::chrono::steady_clock::time_point> completedAt;
+	};
+	mutable std::mutex m_servedBitmapSegmentsMutex;
+	mutable std::map<std::string, ServedOutputBitmapState> m_servedBitmapSegments;
 };

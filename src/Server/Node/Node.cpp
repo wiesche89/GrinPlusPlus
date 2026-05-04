@@ -10,10 +10,25 @@
 #include <BlockChain/BlockChain.h>
 #include <Database/Database.h>
 #include <Common/Logger.h>
+#include <P2P/SyncStatus.h>
 #include <PMMR/TxHashSetManager.h>
 
 #include <iostream>
 #include <thread>
+
+static const char* GetHeaderSyncTypeText(const EHeaderSyncType headerSyncType)
+{
+	switch (headerSyncType)
+	{
+		case EHeaderSyncType::LEGACY:
+			return "Legacy";
+		case EHeaderSyncType::PIHD:
+			return "PIHD";
+		case EHeaderSyncType::UNKNOWN:
+		default:
+			return "Unknown";
+	}
+}
 
 Node::Node(
 	const Context::Ptr& pContext,
@@ -73,7 +88,8 @@ void Node::UpdateDisplay(const int secondsRunning)
 	{
 		const uint64_t networkHeight = pSyncStatus->GetNetworkHeight();
 		const uint64_t percentage = networkHeight > 0 ? (pSyncStatus->GetHeaderHeight() * 100 / networkHeight) : 0;
-		std::cout << "\nStatus: Syncing Headers (" << percentage << "%)";
+		std::cout << "\nStatus: Syncing " << GetHeaderSyncTypeText(pSyncStatus->GetHeaderSyncType())
+			<< " Headers (" << percentage << "%)";
 	}
 	else if (status == ESyncStatus::SYNCING_TXHASHSET)
 	{

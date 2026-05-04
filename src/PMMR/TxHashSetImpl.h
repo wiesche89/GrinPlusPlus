@@ -59,11 +59,18 @@ public:
 	std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> GetOutputSegment(const SegmentIdentifier& identifier) const final;
 	Hash GetOutputRoot(const uint64_t outputMMRSize) const final;
 	Hash GetOutputBitmapRoot(const uint64_t numOutputs) const final;
+	BitmapAccumulator GetOutputBitmapAccumulator() const final;
 	std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> GetRangeProofSegment(const SegmentIdentifier& identifier) const final;
 	std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> GetKernelSegment(const SegmentIdentifier& identifier) const final;
 
-	bool ApplyOutputSegment(const Segment<OUTPUT_SIZE, OutputIdentifier>& segment, const uint64_t targetMMRSize);
-	bool ApplyRangeProofSegment(const Segment<RANGE_PROOF_SIZE, RangeProof>& segment, const uint64_t targetMMRSize);
+	bool ApplyOutputSegment(
+		const Segment<OUTPUT_SIZE, OutputIdentifier>& segment,
+		const uint64_t targetMMRSize,
+		const BitmapAccumulator* pBitmap);
+	bool ApplyRangeProofSegment(
+		const Segment<RANGE_PROOF_SIZE, RangeProof>& segment,
+		const uint64_t targetMMRSize,
+		const BitmapAccumulator* pBitmap);
 	bool ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment);
 	bool ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment, const uint64_t targetMMRSize) final;
 	void UpdateLeafSets(const BitmapAccumulator& outputBitmap, const uint64_t numOutputs) final;

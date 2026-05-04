@@ -35,7 +35,25 @@ public:
 		auto pOutputPMMR =  std::shared_ptr<OutputPMMR>(new OutputPMMR(pHashFile, pLeafSet, pPruneList, pDataFile));
 		if (includeGenesis && pHashFile->GetSize() == 0)
 		{
-			pOutputPMMR->Append(OutputIdentifier::FromOutput(Global::GetGenesisBlock().GetOutputs().front()));
+			pOutputPMMR->Append(genesisOutput);
+		}
+		else if (includeGenesis && pOutputPMMR->GetSize() >= 1)
+		{
+			const auto pGenesisOutput = pOutputPMMR->GetAt(LeafIndex::At(0));
+			const Hash genesisRoot = Global::GetGenesisHeader()->GetOutputRoot();
+			if (pGenesisOutput == nullptr || pOutputPMMR->Root(1) != genesisRoot)
+			{
+				if (pOutputPMMR->GetSize() == 1)
+				{
+					LOG_WARNING("Output PMMR genesis entry is inconsistent; rebuilding genesis output.");
+					pOutputPMMR->ResetToEmpty();
+					pOutputPMMR->Append(genesisOutput);
+				}
+				else
+				{
+					LOG_WARNING_F("Output PMMR genesis entry is inconsistent in non-empty PMMR with size {}.", pOutputPMMR->GetSize());
+				}
+			}
 		}
 
 		return pOutputPMMR;

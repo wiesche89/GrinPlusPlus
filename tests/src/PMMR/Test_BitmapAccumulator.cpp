@@ -53,16 +53,18 @@ TEST_CASE("BitmapSegmentBlock roundtrips sparse and dense blocks")
 	REQUIRE(sparseChunks[0].IsSet(1023));
 	REQUIRE_FALSE(sparseChunks[0].IsSet(1));
 
-	BitmapChunk dense;
-	for (uint64_t bitIdx = 0; bitIdx < BitmapChunk::LEN_BITS; ++bitIdx) {
-		dense.Set(bitIdx, true);
+	std::vector<BitmapChunk> denseChunksInput(64);
+	for (BitmapChunk& dense : denseChunksInput) {
+		for (uint64_t bitIdx = 0; bitIdx < BitmapChunk::LEN_BITS; ++bitIdx) {
+			dense.Set(bitIdx, true);
+		}
 	}
-	dense.Set(17, false);
+	denseChunksInput[0].Set(17, false);
 
-	BitmapSegmentBlock denseBlock = BitmapSegmentBlock::FromChunks({ dense });
+	BitmapSegmentBlock denseBlock = BitmapSegmentBlock::FromChunks(denseChunksInput);
 	REQUIRE(denseBlock.GetMode() == BitmapSegmentBlock::ESerializationMode::UnsetPositions);
 	std::vector<BitmapChunk> denseChunks = denseBlock.ToChunks();
-	REQUIRE(denseChunks.size() == 1);
+	REQUIRE(denseChunks.size() == 64);
 	REQUIRE_FALSE(denseChunks[0].IsSet(17));
 	REQUIRE(denseChunks[0].IsSet(18));
 }

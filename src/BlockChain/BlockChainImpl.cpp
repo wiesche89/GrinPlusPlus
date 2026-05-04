@@ -238,10 +238,20 @@ EBlockChainStatus BlockChain::ProcessPIBDTransactionHashSet(const Hash& blockHas
 
 		auto pBlockSums = pTxHashSet->ValidateTxHashSet(*pHeader, *this, syncStatus);
 		if (pBlockSums == nullptr) {
+			if (!Global::IsRunning()) {
+				LOG_WARNING_F("PIBD validation of {} interrupted by shutdown.", blockHash);
+				return EBlockChainStatus::UNKNOWN_ERROR;
+			}
+
 			LOG_ERROR_F("PIBD validation of {} failed.", blockHash);
 			pTxHashSet.reset();
 			m_pChainState->Write()->GetTxHashSetManager()->ClearPIBDResumeState();
 			return EBlockChainStatus::INVALID;
+		}
+
+		if (!Global::IsRunning()) {
+			LOG_WARNING_F("PIBD validation of {} completed during shutdown; skipping chain update.", blockHash);
+			return EBlockChainStatus::UNKNOWN_ERROR;
 		}
 
 		auto stateBatch = m_pChainState->BatchWrite();

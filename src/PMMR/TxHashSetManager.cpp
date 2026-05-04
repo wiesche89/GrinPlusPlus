@@ -109,6 +109,12 @@ std::shared_ptr<ITxHashSet> TxHashSetManager::Open(const BlockHeaderPtr& pConfir
 		}
 	}
 
+	if (pConfirmedTip != nullptr && pConfirmedTip->GetHeight() == 0) {
+		pKernelMMR->Commit();
+		pOutputPMMR->Commit();
+		pRangeProofPMMR->Commit();
+	}
+
 	m_pTxHashSet = std::shared_ptr<TxHashSet>(new TxHashSet(pKernelMMR, pOutputPMMR, pRangeProofPMMR, pConfirmedTip));
 
 	return m_pTxHashSet;
@@ -135,9 +141,12 @@ std::shared_ptr<ITxHashSet> TxHashSetManager::OpenEmpty(const BlockHeaderPtr& pA
 		std::shared_ptr<OutputPMMR> pOutputPMMR;
 		std::shared_ptr<RangeProofPMMR> pRangeProofPMMR;
 
-		pKernelMMR = KernelMMR::Load(txHashSetPath, false);
-		pOutputPMMR = OutputPMMR::Load(txHashSetPath, false);
-		pRangeProofPMMR = RangeProofPMMR::Load(txHashSetPath, false);
+		pKernelMMR = KernelMMR::Load(txHashSetPath, true);
+		pOutputPMMR = OutputPMMR::Load(txHashSetPath, true);
+		pRangeProofPMMR = RangeProofPMMR::Load(txHashSetPath, true);
+		pKernelMMR->Commit();
+		pOutputPMMR->Commit();
+		pRangeProofPMMR->Commit();
 
 		m_pTxHashSet = std::shared_ptr<TxHashSet>(new TxHashSet(pKernelMMR, pOutputPMMR, pRangeProofPMMR, pArchiveHeader));
 		WritePIBDMetadata(txHashSetPath, pArchiveHeader);
@@ -160,9 +169,12 @@ std::shared_ptr<ITxHashSet> TxHashSetManager::OpenForPIBD(const BlockHeaderPtr& 
 	}
 
 	try {
-		std::shared_ptr<KernelMMR> pKernelMMR = KernelMMR::Load(txHashSetPath, false);
-		std::shared_ptr<OutputPMMR> pOutputPMMR = OutputPMMR::Load(txHashSetPath, false);
-		std::shared_ptr<RangeProofPMMR> pRangeProofPMMR = RangeProofPMMR::Load(txHashSetPath, false);
+		std::shared_ptr<KernelMMR> pKernelMMR = KernelMMR::Load(txHashSetPath, true);
+		std::shared_ptr<OutputPMMR> pOutputPMMR = OutputPMMR::Load(txHashSetPath, true);
+		std::shared_ptr<RangeProofPMMR> pRangeProofPMMR = RangeProofPMMR::Load(txHashSetPath, true);
+		pKernelMMR->Commit();
+		pOutputPMMR->Commit();
+		pRangeProofPMMR->Commit();
 
 		m_pTxHashSet = std::shared_ptr<TxHashSet>(new TxHashSet(pKernelMMR, pOutputPMMR, pRangeProofPMMR, pArchiveHeader));
 

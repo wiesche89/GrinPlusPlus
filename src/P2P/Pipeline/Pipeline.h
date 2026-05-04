@@ -121,6 +121,11 @@ public:
 		return m_pTxHashSetPipe->IsPIBDComplete();
 	}
 
+	bool IsPIBDValidationRunning() const
+	{
+		return m_pTxHashSetPipe->IsPIBDValidationRunning();
+	}
+
 private:
 	Pipeline(
 		std::shared_ptr<BlockPipe> pBlockPipe,

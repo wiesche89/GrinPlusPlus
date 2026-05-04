@@ -16,6 +16,7 @@
 #include <P2P/SyncStatus.h>
 #include <algorithm>
 #include <map>
+#include <string>
 #include <thread>
 
 TxHashSet::TxHashSet(
@@ -312,13 +313,15 @@ bool TxHashSet::ValidateRoots(const BlockHeader& blockHeader) const
         const Hash computedRoot = m_pKernelMMR->Root(blockHeader.GetKernelMMRSize());
         const Hash& expectedRoot = blockHeader.GetKernelRoot();
         if (computedRoot != expectedRoot) {
-            LOG_ERROR_F("Kernel root mismatch (header={}, version={}, mmr_size={}, hash_file_size={}, computed={}, expected={})",
-                blockHeader,
+            LOG_ERROR(StringUtil::Format(
+                "Kernel root mismatch: header_hash={}, height={}, version={}, kernel_mmr_size={}, current_kernel_mmr_size={}, computed_kernel_root={}, expected_kernel_root={}",
+                blockHeader.GetHash(),
+                blockHeader.GetHeight(),
                 (uint32_t)blockHeader.GetVersion(),
                 blockHeader.GetKernelMMRSize(),
                 m_pKernelMMR->GetSize(),
                 computedRoot,
-                expectedRoot);
+                expectedRoot));
             return false;
         }
     }
@@ -326,20 +329,53 @@ bool TxHashSet::ValidateRoots(const BlockHeader& blockHeader) const
     Hash outputRoot = m_pOutputPMMR->Root(blockHeader.GetOutputMMRSize());
     if (blockHeader.GetVersion() < 3) {
         if (outputRoot != blockHeader.GetOutputRoot()) {
-            LOG_ERROR_F("Output root not matching for header ({})", blockHeader);
+            LOG_ERROR(StringUtil::Format(
+                "Output root mismatch: header_hash={}, height={}, version={}, output_mmr_size={}, current_output_mmr_size={}, output_leaves={}, computed_output_root={}, expected_output_root={}",
+                blockHeader.GetHash(),
+                blockHeader.GetHeight(),
+                (uint32_t)blockHeader.GetVersion(),
+                blockHeader.GetOutputMMRSize(),
+                m_pOutputPMMR->GetSize(),
+                MMRUtil::CountLeaves(blockHeader.GetOutputMMRSize()),
+                outputRoot,
+                blockHeader.GetOutputRoot()));
             return false;
         }
     } else {
-        Hash UBMT = m_pOutputPMMR->UBMTRoot(blockHeader.GetNumOutputs());
+        Hash UBMT = GetOutputBitmapRoot(blockHeader.GetNumOutputs());
         Hash merged = MMRHashUtil::HashParentWithIndex(outputRoot, UBMT, blockHeader.GetOutputMMRSize());
         if (merged != blockHeader.GetOutputRoot()) {
-            LOG_ERROR_F("Output root not matching for header ({}). Output: {}, UBMT: {}", blockHeader, outputRoot, UBMT);
+            LOG_ERROR(StringUtil::Format(
+                "Output root mismatch: header_hash={}, height={}, version={}, output_mmr_size={}, current_output_mmr_size={}, output_leaves={}, num_outputs={}, bitmap_root={}, computed_output_root={}, merged_output_root={}, expected_output_root={}, current_rangeproof_mmr_size={}, current_kernel_mmr_size={}",
+                blockHeader.GetHash(),
+                blockHeader.GetHeight(),
+                (uint32_t)blockHeader.GetVersion(),
+                blockHeader.GetOutputMMRSize(),
+                m_pOutputPMMR->GetSize(),
+                MMRUtil::CountLeaves(blockHeader.GetOutputMMRSize()),
+                blockHeader.GetNumOutputs(),
+                UBMT,
+                outputRoot,
+                merged,
+                blockHeader.GetOutputRoot(),
+                m_pRangeProofPMMR->GetSize(),
+                m_pKernelMMR->GetSize()));
             return false;
         }
     }
 
-    if (m_pRangeProofPMMR->Root(blockHeader.GetOutputMMRSize()) != blockHeader.GetRangeProofRoot()) {
-        LOG_ERROR_F("RangeProof root not matching for header ({})", blockHeader);
+    const Hash rangeProofRoot = m_pRangeProofPMMR->Root(blockHeader.GetOutputMMRSize());
+    if (rangeProofRoot != blockHeader.GetRangeProofRoot()) {
+        LOG_ERROR(StringUtil::Format(
+            "RangeProof root mismatch: header_hash={}, height={}, version={}, output_mmr_size={}, current_rangeproof_mmr_size={}, rangeproof_leaves={}, computed_rangeproof_root={}, expected_rangeproof_root={}",
+            blockHeader.GetHash(),
+            blockHeader.GetHeight(),
+            (uint32_t)blockHeader.GetVersion(),
+            blockHeader.GetOutputMMRSize(),
+            m_pRangeProofPMMR->GetSize(),
+            MMRUtil::CountLeaves(blockHeader.GetOutputMMRSize()),
+            rangeProofRoot,
+            blockHeader.GetRangeProofRoot()));
         return false;
     }
 
@@ -493,7 +529,35 @@ Hash TxHashSet::GetOutputRoot(const uint64_t outputMMRSize) const
 
 Hash TxHashSet::GetOutputBitmapRoot(const uint64_t numOutputs) const
 {
-	return m_pOutputPMMR->UBMTRoot(numOutputs);
+	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
+	const uint64_t outputLeaves = MMRUtil::CountLeaves(m_pOutputPMMR->GetSize());
+	if (numOutputs == outputLeaves) {
+		BuildOutputBitmapCache();
+		return m_outputBitmapCache->Root();
+	}
+
+	BitmapAccumulator accumulator;
+	const uint64_t chunkCount = (numOutputs + BitmapChunk::LEN_BITS - 1) / BitmapChunk::LEN_BITS;
+	for (uint64_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
+		BitmapChunk chunk;
+		const uint64_t firstLeaf = chunkIdx * BitmapChunk::LEN_BITS;
+		const uint64_t lastLeaf = (std::min)(numOutputs, firstLeaf + BitmapChunk::LEN_BITS);
+		for (uint64_t leafIdx = firstLeaf; leafIdx < lastLeaf; ++leafIdx) {
+			if (m_pOutputPMMR->IsUnpruned(LeafIndex::At(leafIdx))) {
+				chunk.Set(leafIdx - firstLeaf, true);
+			}
+		}
+		accumulator.AppendChunk(std::move(chunk));
+	}
+
+	return accumulator.Root();
+}
+
+BitmapAccumulator TxHashSet::GetOutputBitmapAccumulator() const
+{
+	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
+	BuildOutputBitmapCache();
+	return m_outputBitmapCache.value();
 }
 
 std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> TxHashSet::GetRangeProofSegment(const SegmentIdentifier& identifier) const
@@ -506,15 +570,21 @@ std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> TxHashSet::Get
 	return TxHashSetSegmenter(*this).KernelSegment(identifier);
 }
 
-bool TxHashSet::ApplyOutputSegment(const Segment<OUTPUT_SIZE, OutputIdentifier>& segment, const uint64_t targetMMRSize)
+bool TxHashSet::ApplyOutputSegment(
+	const Segment<OUTPUT_SIZE, OutputIdentifier>& segment,
+	const uint64_t targetMMRSize,
+	const BitmapAccumulator* pBitmap)
 {
 	InvalidateOutputBitmapCache();
-	return m_pOutputPMMR->ApplySegment(segment, targetMMRSize);
+	return m_pOutputPMMR->ApplySegment(segment, targetMMRSize, pBitmap);
 }
 
-bool TxHashSet::ApplyRangeProofSegment(const Segment<RANGE_PROOF_SIZE, RangeProof>& segment, const uint64_t targetMMRSize)
+bool TxHashSet::ApplyRangeProofSegment(
+	const Segment<RANGE_PROOF_SIZE, RangeProof>& segment,
+	const uint64_t targetMMRSize,
+	const BitmapAccumulator* pBitmap)
 {
-	return m_pRangeProofPMMR->ApplySegment(segment, targetMMRSize);
+	return m_pRangeProofPMMR->ApplySegment(segment, targetMMRSize, pBitmap);
 }
 
 bool TxHashSet::ApplyKernelSegment(const Segment<KERNEL_SIZE, TransactionKernel>& segment)
@@ -532,6 +602,10 @@ void TxHashSet::UpdateLeafSets(const BitmapAccumulator& outputBitmap, const uint
 	InvalidateOutputBitmapCache();
 	m_pOutputPMMR->UpdateLeafSet(outputBitmap, numOutputs);
 	m_pRangeProofPMMR->UpdateLeafSet(outputBitmap, numOutputs);
+
+	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
+	m_outputBitmapCacheOutputMMRSize = m_pOutputPMMR->GetSize();
+	m_outputBitmapCache = outputBitmap;
 }
 
 OutputRange TxHashSet::GetOutputsByLeafIndex(std::shared_ptr<const IBlockDB> pBlockDB, const uint64_t startIndex, const uint64_t maxNumOutputs) const

@@ -35,6 +35,24 @@ public:
 		{
 			pPMMR->Append(Global::GetGenesisBlock().GetOutputs().front().GetRangeProof());
 		}
+		else if (includeGenesis && pPMMR->GetSize() >= 1)
+		{
+			const auto pGenesisRangeProof = pPMMR->GetAt(LeafIndex::At(0));
+			const Hash genesisRoot = Global::GetGenesisHeader()->GetRangeProofRoot();
+			if (pGenesisRangeProof == nullptr || pPMMR->Root(1) != genesisRoot)
+			{
+				if (pPMMR->GetSize() == 1)
+				{
+					LOG_WARNING("RangeProof PMMR genesis entry is inconsistent; rebuilding genesis rangeproof.");
+					pPMMR->ResetToEmpty();
+					pPMMR->Append(Global::GetGenesisBlock().GetOutputs().front().GetRangeProof());
+				}
+				else
+				{
+					LOG_WARNING_F("RangeProof PMMR genesis entry is inconsistent in non-empty PMMR with size {}.", pPMMR->GetSize());
+				}
+			}
+		}
 
 		return pPMMR;
 	}

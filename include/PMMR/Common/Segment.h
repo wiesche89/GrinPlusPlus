@@ -61,6 +61,16 @@ class Segment : public Traits::ISerializable
         return std::nullopt;
     }
 
+    std::optional<Hash> GetProvidedStoredHash(const uint64_t position) const
+    {
+        const auto hashIter = std::find(m_hash_pos.begin(), m_hash_pos.end(), position);
+        if (hashIter == m_hash_pos.end()) {
+            return std::nullopt;
+        }
+
+        return m_hashes[std::distance(m_hash_pos.begin(), hashIter)];
+    }
+
     static bool BitmapContains(const BitmapAccumulator& bitmap, const uint64_t bitIndex)
     {
         const uint64_t chunkIndex = BitmapAccumulator::ChunkIndex(bitIndex);
@@ -95,6 +105,19 @@ class Segment : public Traits::ISerializable
         }
 
         return false;
+    }
+
+    static bool IsLeafRequiredByBitmap(const BitmapAccumulator& bitmap, const Index& index, const uint64_t mmrSize)
+    {
+        const uint64_t leafIndex = index.GetLeafIndex();
+        if (BitmapContains(bitmap, leafIndex) || index.GetPosition() == mmrSize - 1) {
+            return true;
+        }
+
+        const uint64_t siblingLeafIndex = MMRUtil::IsLeftSibling(index.GetPosition())
+            ? leafIndex + 1
+            : (leafIndex == 0 ? leafIndex : leafIndex - 1);
+        return siblingLeafIndex < MMRUtil::CountLeaves(mmrSize) && BitmapContains(bitmap, siblingLeafIndex);
     }
 
 public:
@@ -160,52 +183,59 @@ public:
             return std::nullopt;
         }
 
-        std::vector<std::pair<uint64_t, Hash>> nodeHashes;
-        nodeHashes.reserve(m_hashes.size() + m_leaves.size());
-
-        const auto getNodeHash = [&nodeHashes](const uint64_t pos) -> std::optional<Hash> {
-            const auto iter = std::find_if(
-                nodeHashes.begin(),
-                nodeHashes.end(),
-                [pos](const std::pair<uint64_t, Hash>& entry) { return entry.first == pos; });
-            if (iter == nodeHashes.end()) {
-                return std::nullopt;
-            }
-
-            return iter->second;
-        };
+        std::vector<std::optional<Hash>> hashes;
+        hashes.reserve((size_t)(posRange.second - posRange.first + 1));
 
         for (uint64_t pos = posRange.first; pos <= posRange.second; ++pos) {
-            if (const std::optional<Hash> providedHash = GetProvidedHash(pos)) {
-                nodeHashes.emplace_back(pos, providedHash.value());
-                continue;
-            }
-
             const Index index = Index::At(pos);
             if (index.IsLeaf()) {
-                if (pBitmap == nullptr || IsRequiredByBitmap(*pBitmap, index, mmrSize)) {
-                    return std::nullopt;
+                if (pBitmap == nullptr || IsLeafRequiredByBitmap(*pBitmap, index, mmrSize)) {
+                    const auto leafIter = std::find(m_leaf_pos.begin(), m_leaf_pos.end(), pos);
+                    if (leafIter == m_leaf_pos.end()) {
+                        return std::nullopt;
+                    }
+
+                    hashes.emplace_back(HashLeafWithIndex(m_leaves[std::distance(m_leaf_pos.begin(), leafIter)], pos));
+                } else {
+                    hashes.emplace_back(std::nullopt);
                 }
 
                 continue;
             }
 
-            const std::optional<Hash> leftHash = getNodeHash(index.GetLeftChild().GetPosition());
-            const std::optional<Hash> rightHash = getNodeHash(index.GetRightChild().GetPosition());
-            if (!leftHash.has_value() || !rightHash.has_value()) {
-                if (pBitmap != nullptr && !IsRequiredByBitmap(*pBitmap, index, mmrSize)) {
+            if (hashes.size() < 2) {
+                return std::nullopt;
+            }
+
+            std::optional<Hash> rightHash = hashes.back();
+            hashes.pop_back();
+            std::optional<Hash> leftHash = hashes.back();
+            hashes.pop_back();
+
+            if (pBitmap != nullptr) {
+                if (!leftHash.has_value() && !rightHash.has_value()) {
+                    hashes.emplace_back(std::nullopt);
                     continue;
                 }
 
+                if (!leftHash.has_value()) {
+                    leftHash = GetProvidedStoredHash(index.GetLeftChild().GetPosition());
+                }
+                if (!rightHash.has_value()) {
+                    rightHash = GetProvidedStoredHash(index.GetRightChild().GetPosition());
+                }
+            }
+
+            if (!leftHash.has_value() || !rightHash.has_value()) {
                 return std::nullopt;
             }
 
-            nodeHashes.emplace_back(pos, HashParentWithIndex(leftHash.value(), rightHash.value(), pos));
+            hashes.emplace_back(HashParentWithIndex(leftHash.value(), rightHash.value(), pos));
         }
 
         const uint64_t segmentSize = m_id.GetSegmentUnprunedSize(mmrSize);
         if (segmentSize == m_id.GetSegmentCapacity()) {
-            return getNodeHash(posRange.second);
+            return hashes.empty() ? std::nullopt : hashes.back();
         }
 
         std::optional<Hash> root;
@@ -216,7 +246,15 @@ public:
                 continue;
             }
 
-            const std::optional<Hash> peakHash = getNodeHash(peakPos);
+            if (hashes.empty()) {
+                return std::nullopt;
+            }
+
+            std::optional<Hash> peakHash = hashes.back();
+            hashes.pop_back();
+            if (!peakHash.has_value() && pBitmap != nullptr) {
+                peakHash = GetProvidedStoredHash(peakPos);
+            }
             if (!peakHash.has_value()) {
                 return std::nullopt;
             }
@@ -252,7 +290,7 @@ public:
             return std::nullopt;
         }
 
-        if (const std::optional<Hash> hash = GetProvidedHash(posRange.second)) {
+        if (const std::optional<Hash> hash = GetProvidedStoredHash(posRange.second)) {
             return std::make_pair(hash.value(), posRange.second + 1);
         }
 
@@ -262,7 +300,7 @@ public:
                 break;
             }
 
-            if (const std::optional<Hash> hash = GetProvidedHash(parentPos)) {
+            if (const std::optional<Hash> hash = GetProvidedStoredHash(parentPos)) {
                 return std::make_pair(hash.value(), parentPos + 1);
             }
         }

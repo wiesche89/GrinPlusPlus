@@ -9,12 +9,14 @@
 #include <Crypto/Crypto.h>
 #include <Core/Validation/KernelSignatureValidator.h>
 #include <Core/Validation/KernelSumValidator.h>
+#include <Core/Global.h>
 #include <Common/Util/HexUtil.h>
 #include <Common/Logger.h>
 #include <BlockChain/BlockChain.h>
 #include <thread>
 #include <atomic>
 #include <map>
+#include <stdexcept>
 
 namespace
 {
@@ -187,6 +189,10 @@ bool TxHashSetValidator::ValidateMMRHashes(std::shared_ptr<const MMR> pMMR) cons
     {
         const uint64_t size = pMMR->GetSize();
 		for (Index mmr_idx = Index::At(0); mmr_idx < size; mmr_idx++) {
+			if (!Global::IsRunning()) {
+				return false;
+			}
+
             if (!mmr_idx.IsLeaf()) {
                 const std::unique_ptr<Hash> pParentHash = pMMR->GetHashAt(mmr_idx);
                 if (pParentHash != nullptr) {
@@ -218,6 +224,10 @@ bool TxHashSetValidator::ValidateKernelHistory(const KernelMMR& kernelMMR, const
 	const uint64_t totalHeaders = totalHeight + 1;
 	for (uint64_t height = 0; height <= totalHeight; height++)
 	{
+		if (!Global::IsRunning()) {
+			return false;
+		}
+
 		auto pHeader = m_blockChain.GetBlockHeaderByHeight(height, EChainType::CANDIDATE);
 		if (pHeader == nullptr)
 		{
@@ -273,6 +283,10 @@ bool TxHashSetValidator::ValidateNRDKernelHistory(const KernelMMR& kernelMMR, co
 
 	for (uint64_t height = 0; height <= blockHeader.GetHeight(); ++height)
 	{
+		if (!Global::IsRunning()) {
+			return false;
+		}
+
 		auto pHeader = m_blockChain.GetBlockHeaderByHeight(height, EChainType::CANDIDATE);
 		if (pHeader == nullptr)
 		{
@@ -290,6 +304,10 @@ bool TxHashSetValidator::ValidateNRDKernelHistory(const KernelMMR& kernelMMR, co
 
 		for (uint64_t kernelIndex = previousNumKernels; kernelIndex < currentNumKernels; ++kernelIndex)
 		{
+			if (!Global::IsRunning()) {
+				return false;
+			}
+
 			std::unique_ptr<TransactionKernel> pKernel = kernelMMR.GetKernelAt(LeafIndex::At(kernelIndex));
 			if (pKernel == nullptr)
 			{
@@ -368,6 +386,10 @@ BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const Blo
 	outputCommitmentChunk.reserve(COMMITMENT_SUM_CHUNK_SIZE);
 	std::shared_ptr<const OutputPMMR> pOutputPMMR = txHashSet.GetOutputPMMR();
 	for (LeafIndex output_idx = LeafIndex::At(0); output_idx < numOutputs; output_idx++) {
+		if (!Global::IsRunning()) {
+			throw std::runtime_error("Interrupted by shutdown");
+		}
+
 		std::unique_ptr<OutputIdentifier> pOutput = pOutputPMMR->GetAt(output_idx);
 		if (pOutput != nullptr) {
 			outputCommitmentChunk.push_back(pOutput->GetCommitment());
@@ -393,6 +415,10 @@ BlockSums TxHashSetValidator::ValidateKernelSums(TxHashSet& txHashSet, const Blo
 	excessCommitmentChunk.reserve(COMMITMENT_SUM_CHUNK_SIZE);
 	std::shared_ptr<const KernelMMR> pKernelMMR = txHashSet.GetKernelMMR();
 	for (LeafIndex kernel_idx = LeafIndex::At(0); kernel_idx < numKernels; kernel_idx++) {
+		if (!Global::IsRunning()) {
+			throw std::runtime_error("Interrupted by shutdown");
+		}
+
 		std::unique_ptr<TransactionKernel> pKernel = pKernelMMR->GetKernelAt(kernel_idx);
 		if (pKernel != nullptr) {
 			excessCommitmentChunk.push_back(pKernel->GetExcessCommitment());
@@ -431,6 +457,10 @@ bool TxHashSetValidator::ValidateRangeProofs(TxHashSet& txHashSet, SyncStatus& s
 	const uint64_t outputMMRSize = txHashSet.GetOutputPMMR()->GetSize();
 	for (LeafIndex leaf_idx = LeafIndex::At(0); leaf_idx.GetPosition() < outputMMRSize; leaf_idx++)
 	{
+		if (!Global::IsRunning()) {
+			return false;
+		}
+
 		std::unique_ptr<OutputIdentifier> pOutput = txHashSet.GetOutputPMMR()->GetAt(leaf_idx);
 		if (pOutput != nullptr)
 		{
@@ -473,6 +503,10 @@ bool TxHashSetValidator::ValidateKernelSignatures(const KernelMMR& kernelMMR, Sy
 
 	const uint64_t num_kernels = kernelMMR.GetNumKernels();
 	for (LeafIndex leaf_idx = LeafIndex::At(0); leaf_idx < num_kernels; leaf_idx++) {
+		if (!Global::IsRunning()) {
+			return false;
+		}
+
 		std::unique_ptr<TransactionKernel> pKernel = kernelMMR.GetKernelAt(leaf_idx);
 		if (pKernel == nullptr) {
 			return false;

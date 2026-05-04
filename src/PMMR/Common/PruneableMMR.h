@@ -54,10 +54,11 @@ public:
 		MMRHashUtil::AddHashes(m_pHashFile, serialized, m_pPruneList);
 	}
 
-	bool ApplySegment(const Segment<DATA_SIZE, DATA_TYPE>& segment, const uint64_t targetMMRSize)
+	bool ApplySegment(
+		const Segment<DATA_SIZE, DATA_TYPE>& segment,
+		const uint64_t targetMMRSize,
+		const BitmapAccumulator* pBitmap = nullptr)
 	{
-		(void)targetMMRSize;
-
 		if (segment.GetLeafPositions().size() != segment.GetLeaves().size()) {
 			LOG_WARNING_F("Pruneable PIBD segment {}:{} has {} leaf positions but {} leaves.",
 				segment.GetIdentifier().GetHeight(),
@@ -91,6 +92,47 @@ public:
 			const uint64_t localSize = GetSize();
 			if (node.position < localSize) {
 				continue;
+			}
+
+			const Index index = Index::At(node.position);
+			if (pBitmap != nullptr) {
+				if (node.isHash) {
+					if (IsRequiredByBitmap(*pBitmap, index, targetMMRSize)) {
+						continue;
+					}
+
+					const uint64_t subtreeStart = GetSubtreeFirstPosition(index);
+					if (subtreeStart < localSize) {
+						if (subtreeStart == 0 && localSize == 1) {
+							RewindToEmpty();
+						} else {
+							LOG_WARNING(StringUtil::Format(
+								"Pruneable PIBD segment {}:{} pruned root at {} starts at {}. Expected local PMMR size {}.",
+								segment.GetIdentifier().GetHeight(),
+								segment.GetIdentifier().GetIndex(),
+								node.position,
+								subtreeStart,
+								localSize));
+							return false;
+						}
+					} else if (subtreeStart != localSize) {
+						LOG_WARNING(StringUtil::Format(
+							"Pruneable PIBD segment {}:{} pruned root at {} starts at {}. Expected local PMMR size {}.",
+							segment.GetIdentifier().GetHeight(),
+							segment.GetIdentifier().GetIndex(),
+							node.position,
+							subtreeStart,
+							localSize));
+						return false;
+					}
+
+					AppendPrunedSubtree(segment.GetHashes()[node.index], node.position);
+					continue;
+				}
+
+				if (!IsLeafRequiredByBitmap(*pBitmap, index, targetMMRSize)) {
+					continue;
+				}
 			}
 
 			if (node.isHash) {
@@ -154,6 +196,14 @@ public:
 		m_pLeafSet->Rewind(num_leaves, leavesToAdd);
 	}
 
+	void ResetToEmpty()
+	{
+		SetDirty(true);
+		m_pHashFile->Rewind(0);
+		m_pDataFile->Rewind(0);
+		m_pLeafSet->Rewind(0, {});
+	}
+
 	Hash Root(const uint64_t size) const final
 	{
 		return MMRHashUtil::Root(m_pHashFile, size, m_pPruneList);
@@ -179,6 +229,11 @@ public:
 		return std::make_unique<Hash>(std::move(hash));
 	}
 
+	std::unique_ptr<Hash> GetSegmentHashAt(const Index& mmrIndex) const
+	{
+		return GetHashAt(mmrIndex);
+	}
+
 	std::vector<Hash> GetLastLeafHashes(const uint64_t numHashes) const final
 	{
 		return MMRHashUtil::GetLastLeafHashes(m_pHashFile, m_pLeafSet, m_pPruneList, numHashes);
@@ -196,21 +251,34 @@ public:
 
 	std::unique_ptr<DATA_TYPE> GetAt(const LeafIndex& leaf_idx) const
 	{
-        if (IsUnpruned(leaf_idx)) {
-            uint64_t shift = m_pPruneList->GetLeafShift(leaf_idx.GetIndex());
-            uint64_t shifted_idx = leaf_idx.Get() - shift;
+		if (IsUnpruned(leaf_idx)) {
+			return GetDataAt(leaf_idx);
+		}
 
-            try {
-                std::vector<unsigned char> data = m_pDataFile->GetDataAt(shifted_idx);
-                if (data.size() == DATA_SIZE) {
-                    ByteBuffer byteBuffer(std::move(data));
-                    return std::make_unique<DATA_TYPE>(DATA_TYPE::Deserialize(byteBuffer));
-                }
-            }
-            catch (FileException&) {
-                return std::unique_ptr<DATA_TYPE>(nullptr);
-            }
-        }
+		return std::unique_ptr<DATA_TYPE>(nullptr);
+	}
+
+	std::unique_ptr<DATA_TYPE> GetDataAt(const LeafIndex& leaf_idx) const
+	{
+		if (leaf_idx.GetPosition() >= GetSize() || m_pPruneList->IsCompacted(leaf_idx.GetIndex())) {
+			return std::unique_ptr<DATA_TYPE>(nullptr);
+		}
+
+		// Match grin's PMMRBackend::get_data_from_file(): leaf data is read
+		// with get_leaf_shift(1 + pos0), not get_leaf_shift(pos0).
+		uint64_t shift = m_pPruneList->GetLeafShift(Index::At(leaf_idx.GetPosition() + 1));
+		uint64_t shifted_idx = leaf_idx.Get() - shift;
+
+		try {
+			std::vector<unsigned char> data = m_pDataFile->GetDataAt(shifted_idx);
+			if (data.size() == DATA_SIZE) {
+				ByteBuffer byteBuffer(std::move(data));
+				return std::make_unique<DATA_TYPE>(DATA_TYPE::Deserialize(byteBuffer));
+			}
+		}
+		catch (FileException&) {
+			return std::unique_ptr<DATA_TYPE>(nullptr);
+		}
 
 		return std::unique_ptr<DATA_TYPE>(nullptr);
 	}
@@ -273,6 +341,68 @@ private:
 		}
 	};
 
+	static bool BitmapContains(const BitmapAccumulator& bitmap, const uint64_t bitIndex)
+	{
+		const uint64_t chunkIndex = BitmapAccumulator::ChunkIndex(bitIndex);
+		const std::vector<BitmapChunk>& chunks = bitmap.GetChunks();
+		if (chunkIndex >= chunks.size()) {
+			return false;
+		}
+
+		return chunks[chunkIndex].IsSet(bitIndex % BitmapChunk::LEN_BITS);
+	}
+
+	static uint64_t GetSubtreeFirstPosition(const Index& index) noexcept
+	{
+		const uint64_t nodeCount = (1ULL << (index.GetHeight() + 1)) - 1;
+		return index.GetPosition() + 1 - nodeCount;
+	}
+
+	static uint64_t GetFirstLeafIndex(Index index) noexcept
+	{
+		while (!index.IsLeaf()) {
+			index = index.GetLeftChild();
+		}
+
+		return index.GetLeafIndex();
+	}
+
+	static bool IsRequiredByBitmap(const BitmapAccumulator& bitmap, const Index& index, const uint64_t mmrSize)
+	{
+		const uint64_t firstLeaf = GetFirstLeafIndex(index);
+		const uint64_t subtreeLeafCount = 1ULL << index.GetHeight();
+		const uint64_t maxLeafCount = MMRUtil::CountLeaves(mmrSize);
+		const uint64_t lastLeaf = (std::min)(maxLeafCount, firstLeaf + subtreeLeafCount);
+
+		for (uint64_t leafIndex = firstLeaf; leafIndex < lastLeaf; ++leafIndex) {
+			if (BitmapContains(bitmap, leafIndex)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static bool IsLeafRequiredByBitmap(const BitmapAccumulator& bitmap, const Index& index, const uint64_t mmrSize)
+	{
+		const uint64_t leafIndex = index.GetLeafIndex();
+		if (BitmapContains(bitmap, leafIndex) || index.GetPosition() == mmrSize - 1) {
+			return true;
+		}
+
+		const uint64_t siblingLeafIndex = MMRUtil::IsLeftSibling(index.GetPosition())
+			? leafIndex + 1
+			: (leafIndex == 0 ? leafIndex : leafIndex - 1);
+		return siblingLeafIndex < MMRUtil::CountLeaves(mmrSize) && BitmapContains(bitmap, siblingLeafIndex);
+	}
+
+	void RewindToEmpty()
+	{
+		m_pHashFile->Rewind(0);
+		m_pDataFile->Rewind(0);
+		m_pLeafSet->Rewind(0, {});
+	}
+
 	void AppendLeaf(const DATA_TYPE& leaf)
 	{
 		const uint64_t position = GetSize();
@@ -288,13 +418,6 @@ private:
 	{
 		m_pHashFile->AddData(hash);
 		m_pPruneList->AddPrunedRoot(Index::At(position));
-
-		// A pruned leaf root is not compacted by the prune-list leaf shift.
-		// Preserve the data-file slot so later leaf indexes still map to the
-		// same records after PIBD imports hash-only spent leaves.
-		if (Index::At(position).IsLeaf()) {
-			m_pDataFile->AddData(std::vector<uint8_t>(DATA_SIZE, 0));
-		}
 
 		uint64_t currentPosition = position;
 		Hash currentHash = hash;

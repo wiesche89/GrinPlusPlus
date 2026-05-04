@@ -19,7 +19,7 @@ public:
 		m_lastHeight = 0;
 	}
 
-	bool SyncHeaders(const SyncStatus& syncStatus, const bool startup);
+	bool SyncHeaders(SyncStatus& syncStatus, const bool startup);
 
 private:
 	struct PendingHeaderRequest
@@ -30,7 +30,7 @@ private:
 	};
 
 	bool IsHeaderSyncDue(const SyncStatus& syncStatus);
-	bool RequestHeaders(const SyncStatus& syncStatus);
+	bool RequestHeaders(SyncStatus& syncStatus);
 
 	std::weak_ptr<ConnectionManager> m_pConnectionManager;
 	IBlockChain::Ptr m_pBlockChain;

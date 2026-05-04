@@ -14,6 +14,7 @@
 #include <memory>
 
 static constexpr size_t MAX_MESSAGES_PER_MINUTE = 6000;
+static constexpr std::chrono::seconds DEFAULT_IDLE_TIMEOUT(60);
 
 void Connection::Connect()
 {
@@ -34,22 +35,31 @@ void Connection::Disconnect()
 
 bool Connection::IsConnectionActive() const
 {
+    return GetInactiveReason() == EInactiveReason::NONE;
+}
+
+Connection::EInactiveReason Connection::GetInactiveReason() const
+{
     if (m_terminate) {
         LOG_DEBUG_F("Socket has been terminated for {}", GetPeer());
-        return false;
+        return EInactiveReason::TERMINATED;
     }
 
-    if ((m_lastReceived + std::chrono::seconds(60)) < system_clock::now()) {
-        LOG_DEBUG_F("{} has not received a message in more than a minute", GetPeer());
-        return false;
+    if ((m_lastReceived + DEFAULT_IDLE_TIMEOUT) < system_clock::now()) {
+        LOG_DEBUG_F("{} has not received a message in more than {} seconds", GetPeer(), DEFAULT_IDLE_TIMEOUT.count());
+        return EInactiveReason::APPLICATION_IDLE;
     }
 
     if (GetPeer()->IsBanned()) {
         LOG_DEBUG_F("{} is banned", GetPeer());
-        return false;
+        return EInactiveReason::BANNED;
     }
 
-    return m_pSocket->IsActive();
+    if (!m_pSocket->IsActive()) {
+        return EInactiveReason::SOCKET_INACTIVE;
+    }
+
+    return EInactiveReason::NONE;
 }
 
 void Connection::SendAsync(const IMessage& message)

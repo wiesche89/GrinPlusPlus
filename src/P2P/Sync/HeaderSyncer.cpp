@@ -8,6 +8,7 @@
 #include <Net/SocketAddress.h>
 #include <P2P/Capabilities.h>
 #include <P2P/Common.h>
+#include <P2P/SyncStatus.h>
 #include <algorithm>
 
 static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS = 3;
@@ -27,7 +28,7 @@ static bool IsPIHDIdentifier(const SegmentIdentifier& identifier)
 	return identifier.GetHeight() == P2P::PIHD_HEADER_SEGMENT_HEIGHT;
 }
 
-bool HeaderSyncer::SyncHeaders(const SyncStatus& syncStatus, const bool startup)
+bool HeaderSyncer::SyncHeaders(SyncStatus& syncStatus, const bool startup)
 {
 	const uint64_t chainHeight = syncStatus.GetHeaderHeight();
 	const uint64_t networkHeight = syncStatus.GetNetworkHeight();
@@ -50,6 +51,7 @@ bool HeaderSyncer::SyncHeaders(const SyncStatus& syncStatus, const bool startup)
 
 	m_pendingRequests.clear();
 	HeaderBatchCache::Get().Clear();
+	syncStatus.UpdateHeaderSyncType(EHeaderSyncType::UNKNOWN);
 
 	return false;
 }
@@ -145,7 +147,7 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 	return false;
 }
 
-bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
+bool HeaderSyncer::RequestHeaders(SyncStatus& syncStatus)
 {
 	LOG_TRACE_F(
 		"Requesting headers. header_height={}, network_height={}, pending={}.",
@@ -216,6 +218,7 @@ bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 			const GetHeaderSegmentMessage getHeaderSegmentMessage(identifier);
 			if (pConnectionManager->SendMessageToPeer(getHeaderSegmentMessage, pPeer)) {
 				m_pendingRequests.push_back(PendingHeaderRequest{ pPeer, identifier, timeout });
+				syncStatus.UpdateHeaderSyncType(EHeaderSyncType::PIHD);
 				LOG_TRACE_F("PIHD requested header segment {}:{} from {}.",
 					identifier.GetHeight(),
 					identifier.GetIndex(),
@@ -234,6 +237,7 @@ bool HeaderSyncer::RequestHeaders(const SyncStatus& syncStatus)
 		PeerPtr pPeer = pConnectionManager->SendMessageToMostWorkPeer(getHeadersMessage);
 		if (pPeer != nullptr) {
 			m_pendingRequests.push_back(PendingHeaderRequest{ pPeer, SegmentIdentifier(0, syncStatus.GetHeaderHeight()), timeout });
+			syncStatus.UpdateHeaderSyncType(EHeaderSyncType::LEGACY);
 			sentCount = 1;
 			LOG_TRACE_F(
 				"Legacy HeaderSync requested headers from {} at height {} with {} locators.",

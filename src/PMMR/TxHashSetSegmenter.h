@@ -5,6 +5,7 @@
 #include <Core/Models/OutputIdentifier.h>
 #include <Core/Models/TransactionKernel.h>
 #include <Crypto/Models/RangeProof.h>
+#include <Common/Logger.h>
 #include <PMMR/Common/BitmapSegment.h>
 #include <PMMR/Common/Segment.h>
 #include <PMMR/Common/SegmentId.h>
@@ -45,6 +46,15 @@ public:
 			true,
 			[this](const LeafIndex& leafIdx) {
 				return m_pTxHashSet->GetOutputPMMR()->GetAt(leafIdx);
+			},
+			[this](const LeafIndex& leafIdx) {
+				return m_pTxHashSet->GetOutputPMMR()->GetDataAt(leafIdx);
+			},
+			[this](const LeafIndex& leafIdx) {
+				return m_pTxHashSet->GetOutputPMMR()->IsUnpruned(leafIdx);
+			},
+			[this](const Index& index) {
+				return m_pTxHashSet->GetOutputPMMR()->GetSegmentHashAt(index);
 			});
 	}
 
@@ -56,6 +66,15 @@ public:
 			true,
 			[this](const LeafIndex& leafIdx) {
 				return m_pTxHashSet->GetRangeProofPMMR()->GetAt(leafIdx);
+			},
+			[this](const LeafIndex& leafIdx) {
+				return m_pTxHashSet->GetRangeProofPMMR()->GetDataAt(leafIdx);
+			},
+			[this](const LeafIndex& leafIdx) {
+				return m_pTxHashSet->GetOutputPMMR()->IsUnpruned(leafIdx);
+			},
+			[this](const Index& index) {
+				return m_pTxHashSet->GetRangeProofPMMR()->GetSegmentHashAt(index);
 			});
 	}
 
@@ -136,6 +155,28 @@ private:
 		const bool prunable,
 		LEAF_READER readLeaf) const
 	{
+		return BuildSegment<DATA_SIZE, DATA_TYPE>(
+			mmr,
+			identifier,
+			prunable,
+			readLeaf,
+			readLeaf,
+			[](const LeafIndex&) { return false; },
+			[&mmr](const Index& index) {
+				return mmr.GetHashAt(index);
+			});
+	}
+
+	template<size_t DATA_SIZE, typename DATA_TYPE, typename MMR_TYPE, typename LEAF_READER, typename RAW_LEAF_READER, typename UNPRUNED_READER, typename HASH_READER>
+	std::optional<Segment<DATA_SIZE, DATA_TYPE>> BuildSegment(
+		const MMR_TYPE& mmr,
+		const SegmentIdentifier& identifier,
+		const bool prunable,
+		LEAF_READER readLeaf,
+		RAW_LEAF_READER readRawLeaf,
+		UNPRUNED_READER isUnpruned,
+		HASH_READER readHash) const
+	{
 		const uint64_t mmrSize = mmr.GetSize();
 		if (identifier.GetSegmentUnprunedSize(mmrSize) == 0) {
 			return std::nullopt;
@@ -150,7 +191,8 @@ private:
 		for (uint64_t pos = posRange.first; pos <= posRange.second; ++pos) {
 			const Index index = Index::At(pos);
 			if (index.IsLeaf()) {
-				std::unique_ptr<DATA_TYPE> pLeaf = readLeaf(LeafIndex::From(index));
+				const LeafIndex leafIdx = LeafIndex::From(index);
+				std::unique_ptr<DATA_TYPE> pLeaf = prunable ? readRawLeaf(leafIdx) : readLeaf(leafIdx);
 				if (pLeaf != nullptr) {
 					leafPositions.push_back(pos);
 					leaves.push_back(std::move(*pLeaf));
@@ -160,10 +202,18 @@ private:
 				if (!prunable) {
 					return std::nullopt;
 				}
+
+				if (RequiresLeafData(index, mmrSize, isUnpruned)) {
+					LOG_WARNING_F("Cannot build PIBD segment {}:{}; required leaf data at position {} is not available.",
+						identifier.GetHeight(),
+						identifier.GetIndex(),
+						pos);
+					return std::nullopt;
+				}
 			}
 
 			if (prunable) {
-				std::unique_ptr<Hash> pHash = mmr.GetHashAt(index);
+				std::unique_ptr<Hash> pHash = readHash(index);
 				if (pHash != nullptr) {
 					hashPositions.push_back(pos);
 					hashes.push_back(*pHash);
@@ -175,7 +225,7 @@ private:
 		if (leaves.empty() && hashes.empty()) {
 			const std::vector<std::pair<uint64_t, uint64_t>> branch = MMRUtil::FamilyBranch(posRange.second, mmrSize);
 			for (const std::pair<uint64_t, uint64_t>& entry : branch) {
-				std::unique_ptr<Hash> pHash = mmr.GetHashAt(Index::At(entry.first));
+				std::unique_ptr<Hash> pHash = readHash(Index::At(entry.first));
 				if (pHash != nullptr) {
 					hashPositions.push_back(entry.first);
 					hashes.push_back(*pHash);
@@ -190,8 +240,8 @@ private:
 			posRange.first,
 			posRange.second,
 			startPos,
-			[&mmr](const uint64_t position) -> std::optional<Hash> {
-				std::unique_ptr<Hash> pHash = mmr.GetHashAt(Index::At(position));
+			[&readHash](const uint64_t position) -> std::optional<Hash> {
+				std::unique_ptr<Hash> pHash = readHash(Index::At(position));
 				if (pHash == nullptr) {
 					return std::nullopt;
 				}
@@ -211,4 +261,19 @@ private:
 	}
 
 	const TxHashSet* m_pTxHashSet;
+
+	template<typename UNPRUNED_READER>
+	static bool RequiresLeafData(const Index& index, const uint64_t mmrSize, UNPRUNED_READER isUnpruned)
+	{
+		const LeafIndex leafIdx = LeafIndex::From(index);
+		if (isUnpruned(leafIdx) || index.GetPosition() == mmrSize - 1) {
+			return true;
+		}
+
+		const uint64_t siblingLeafIdx = MMRUtil::IsLeftSibling(index.GetPosition())
+			? leafIdx.Get() + 1
+			: (leafIdx.Get() == 0 ? leafIdx.Get() : leafIdx.Get() - 1);
+		const LeafIndex sibling = LeafIndex::At(siblingLeafIdx);
+		return sibling.GetPosition() < mmrSize && isUnpruned(sibling);
+	}
 };

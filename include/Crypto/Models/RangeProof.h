@@ -20,7 +20,7 @@ public:
 	// Constructors
 	//
 	RangeProof(std::vector<unsigned char>&& proofBytes)
-		: m_proofBytes(std::move(proofBytes))
+		: m_proofBytes(Normalize(std::move(proofBytes)))
 	{
 
 	}
@@ -79,6 +79,16 @@ public:
 	std::string Format() const final { return HexUtil::ConvertToHex(m_proofBytes); }
 
 private:
+	static std::vector<unsigned char> Normalize(std::vector<unsigned char>&& proofBytes)
+	{
+		if (proofBytes.size() > MAX_PROOF_SIZE) {
+			throw DESERIALIZATION_EXCEPTION_F("Proof of size {} exceeds the maximum", proofBytes.size());
+		}
+
+		proofBytes.resize(MAX_PROOF_SIZE, 0);
+		return std::move(proofBytes);
+	}
+
 	// The proof itself, at most 675 bytes long.
 	std::vector<unsigned char> m_proofBytes;
 };

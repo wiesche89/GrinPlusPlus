@@ -35,6 +35,11 @@ static uint64_t GetConnectedPeerHeight(const std::vector<ConnectedPeer>& connect
 
 bool StateSyncer::SyncState(SyncStatus& syncStatus)
 {
+	if (m_pPipeline->IsPIBDValidationRunning())
+	{
+		return true;
+	}
+
 	if (syncStatus.GetStatus() == ESyncStatus::SYNCING_TXHASHSET_PIBD)
 	{
 		if (RequestPIBDState(syncStatus)) {
