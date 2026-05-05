@@ -8,6 +8,15 @@
 #include <Common/Logger.h>
 
 static unsigned long DEFAULT_TIMEOUT = 1 * 1000;
+static constexpr size_t ASYNC_WRITE_LOG_THRESHOLD_BYTES = 64 * 1024;
+static constexpr uint64_t ASYNC_WRITE_SLOW_LOG_THRESHOLD_MS = 5000;
+static constexpr size_t ASYNC_WRITE_QUEUE_DEPTH_LOG_THRESHOLD = 8;
+
+static uint64_t ElapsedMillis(const std::chrono::steady_clock::time_point& start)
+{
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+}
 
 #ifndef _WIN32
 #define SOCKET_ERROR -1
@@ -186,11 +195,36 @@ bool Socket::SendSync(const std::vector<uint8_t>& message, const bool incrementC
     return bytesWritten == message.size();
 }
 
-void Socket::SendAsync(const std::vector<uint8_t>& message)
+void Socket::SendAsync(const std::vector<uint8_t>& message, const uint8_t priority)
 {
     std::unique_lock<std::mutex> queueLock(m_writeQueueMutex);
     const bool first_in_queue = m_writeQueue.empty();
-    m_writeQueue.push_back(message);
+    m_writeQueueBytes += message.size();
+    QueuedWrite queuedWrite{
+        message,
+        std::chrono::steady_clock::now(),
+        {},
+        priority };
+
+    if (!first_in_queue && priority > 0) {
+        auto insertAt = m_writeQueue.begin() + 1; // The front write may already be in progress.
+        while (insertAt != m_writeQueue.end() && insertAt->priority >= priority) {
+            ++insertAt;
+        }
+        m_writeQueue.insert(insertAt, std::move(queuedWrite));
+    } else {
+        m_writeQueue.push_back(std::move(queuedWrite));
+    }
+
+    if (message.size() >= ASYNC_WRITE_LOG_THRESHOLD_BYTES) {
+        LOG_TRACE(StringUtil::Format(
+            "Socket queued async write to {}: bytes={}, priority={}, queue_depth={}, queue_bytes={}",
+            Format(),
+            message.size(),
+            priority,
+            m_writeQueue.size(),
+            m_writeQueueBytes));
+    }
 
     if (!first_in_queue) {
         // There is already an async_write in process.
@@ -209,31 +243,110 @@ void Socket::StartAsyncWriteLocked()
         return;
     }
 
-    const std::vector<uint8_t>& message = m_writeQueue.front();
+    QueuedWrite& queuedWrite = m_writeQueue.front();
+    queuedWrite.writeStartedAt = std::chrono::steady_clock::now();
 
     std::shared_lock<std::shared_mutex> socketLock(m_socketMutex);
     if (m_socketOpen) {
+        if (queuedWrite.bytes.size() >= ASYNC_WRITE_LOG_THRESHOLD_BYTES) {
+            LOG_TRACE(StringUtil::Format(
+                "Socket starting async write to {}: bytes={}, priority={}, queued_ms={}, queue_depth={}, queue_bytes={}",
+                Format(),
+                queuedWrite.bytes.size(),
+                queuedWrite.priority,
+                ElapsedMillis(queuedWrite.enqueuedAt),
+                m_writeQueue.size(),
+                m_writeQueueBytes));
+        }
+
         asio::async_write(
             *m_pSocket,
-            asio::buffer(message.data(), message.size()),
+            asio::buffer(queuedWrite.bytes.data(), queuedWrite.bytes.size()),
             std::bind(&Socket::HandleSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2)
         );
     }
 }
 
-void Socket::HandleSent(const asio::error_code& ec, size_t)
+void Socket::HandleSent(const asio::error_code& ec, size_t bytes_transferred)
 {
     m_rateCounter.AddMessageSent();
 
     std::unique_lock<std::mutex> queueLock(m_writeQueueMutex);
+    size_t messageSize = 0;
+    uint64_t queuedMs = 0;
+    uint64_t writeMs = 0;
+    uint8_t priority = 0;
     if (!m_writeQueue.empty()) {
+        const QueuedWrite& queuedWrite = m_writeQueue.front();
+        messageSize = queuedWrite.bytes.size();
+        priority = queuedWrite.priority;
+        queuedMs = ElapsedMillis(queuedWrite.enqueuedAt);
+        writeMs = queuedWrite.writeStartedAt.time_since_epoch().count() == 0
+            ? 0
+            : ElapsedMillis(queuedWrite.writeStartedAt);
+        if (m_writeQueueBytes >= messageSize) {
+            m_writeQueueBytes -= messageSize;
+        } else {
+            m_writeQueueBytes = 0;
+        }
         m_writeQueue.pop_front();
     }
+    const size_t queueDepthAfterPop = m_writeQueue.size();
+    const size_t queueBytesAfterPop = m_writeQueueBytes;
 
     if (ec) {
-        LOG_INFO_F("Failed to send message to {}: {}", *this, ec.message());
+        LOG_INFO(StringUtil::Format(
+            "Failed to send message to {}: {} (bytes={}, priority={}, transferred={}, queued_ms={}, write_ms={}, queue_depth={}, queue_bytes={})",
+            Format(),
+            ec.message(),
+            messageSize,
+            priority,
+            bytes_transferred,
+            queuedMs,
+            writeMs,
+            queueDepthAfterPop,
+            queueBytesAfterPop));
     } else if (!m_writeQueue.empty()) {
+        if (messageSize >= ASYNC_WRITE_LOG_THRESHOLD_BYTES) {
+            const bool slowOrBacklogged = queuedMs >= ASYNC_WRITE_SLOW_LOG_THRESHOLD_MS
+                || writeMs >= ASYNC_WRITE_SLOW_LOG_THRESHOLD_MS
+                || queueDepthAfterPop >= ASYNC_WRITE_QUEUE_DEPTH_LOG_THRESHOLD;
+            const std::string logMessage = StringUtil::Format(
+                "Socket finished async write to {}: bytes={}, priority={}, transferred={}, queued_ms={}, write_ms={}, queue_depth={}, queue_bytes={}",
+                Format(),
+                messageSize,
+                priority,
+                bytes_transferred,
+                queuedMs,
+                writeMs,
+                queueDepthAfterPop,
+                queueBytesAfterPop);
+            if (slowOrBacklogged) {
+                LOG_DEBUG(logMessage);
+            } else {
+                LOG_TRACE(logMessage);
+            }
+        }
         StartAsyncWriteLocked();
+    } else if (messageSize >= ASYNC_WRITE_LOG_THRESHOLD_BYTES) {
+        const bool slowOrBacklogged = queuedMs >= ASYNC_WRITE_SLOW_LOG_THRESHOLD_MS
+            || writeMs >= ASYNC_WRITE_SLOW_LOG_THRESHOLD_MS
+            || queueDepthAfterPop >= ASYNC_WRITE_QUEUE_DEPTH_LOG_THRESHOLD;
+        const std::string logMessage = StringUtil::Format(
+            "Socket finished async write to {}: bytes={}, priority={}, transferred={}, queued_ms={}, write_ms={}, queue_depth={}, queue_bytes={}",
+            Format(),
+            messageSize,
+            priority,
+            bytes_transferred,
+            queuedMs,
+            writeMs,
+            queueDepthAfterPop,
+            queueBytesAfterPop);
+        if (slowOrBacklogged) {
+            LOG_DEBUG(logMessage);
+        } else {
+            LOG_TRACE(logMessage);
+        }
     }
 }
 

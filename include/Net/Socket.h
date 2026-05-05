@@ -1,11 +1,12 @@
 #pragma once
 
 #include <Common/Compat.h>
-#include <Common/SharedQueue.h>
 #include <Core/Traits/Printable.h>
 #include <Net/RateCounter.h>
 #include <Net/SocketAddress.h>
 
+#include <chrono>
+#include <deque>
 #include <inttypes.h>
 #include <vector>
 #include <memory>
@@ -72,11 +73,19 @@ public:
 	void SetConnectFailed(bool failed) { m_failed = failed; }
 
 	bool SendSync(const std::vector<uint8_t>& message, const bool incrementCount);
-	void SendAsync(const std::vector<uint8_t>& message);
+	void SendAsync(const std::vector<uint8_t>& message, const uint8_t priority = 0);
 
 	std::vector<uint8_t> ReceiveSync(const size_t numBytes, const bool incrementCount);
 
 private:
+	struct QueuedWrite
+	{
+		std::vector<uint8_t> bytes;
+		std::chrono::steady_clock::time_point enqueuedAt;
+		std::chrono::steady_clock::time_point writeStartedAt;
+		uint8_t priority;
+	};
+
 	bool HasReceivedData();
 	void ThrowSocketException(const asio::error_code& ec);
 	void StartAsyncWriteLocked();
@@ -94,7 +103,8 @@ private:
 	RateCounter m_rateCounter;
 
 	std::mutex m_writeQueueMutex;
-	SharedQueue<std::vector<uint8_t>> m_writeQueue; // TODO: Use strand instead of queue
+	std::deque<QueuedWrite> m_writeQueue; // TODO: Use strand instead of queue
+	size_t m_writeQueueBytes{ 0 };
 
 	asio::error_code m_errorCode;
 	std::atomic_bool m_socketOpen;

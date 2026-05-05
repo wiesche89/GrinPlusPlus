@@ -46,6 +46,7 @@ public:
 			{
 				syncInfo["highest_height"] = pSyncStatus->GetNetworkHeight();
 				syncInfo["current_height"] = m_pBlockChain->GetHeight(EChainType::CANDIDATE);
+				syncInfo["header_sync_type"] = GetHeaderSyncTypeString(pSyncStatus->GetHeaderSyncType());
 				hasSyncInfo = true;
 				break;
 			}
@@ -71,8 +72,8 @@ public:
 			case ESyncStatus::PROCESSING_TXHASHSET:
 			case ESyncStatus::TXHASHSET_PIBD_LEAFSET_UPDATE:
 			case ESyncStatus::TXHASHSET_SETUP:
-			case ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION:
 			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
 				syncInfo["headers"] = Json::Value(Json::nullValue);
 				syncInfo["headers_total"] = Json::Value(Json::nullValue);
 				syncInfo["kernel_pos"] = Json::Value(Json::nullValue);
@@ -82,6 +83,7 @@ public:
 			}
 			case ESyncStatus::TXHASHSET_KERNEL_HISTORY_VALIDATION:
 			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
 				syncInfo["headers"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
 				syncInfo["headers_total"] = Json::UInt64(pSyncStatus->GetProcessingTotal());
 				syncInfo["kernel_pos"] = Json::Value(Json::nullValue);
@@ -91,6 +93,7 @@ public:
 			}
 			case ESyncStatus::TXHASHSET_NRD_KERNELS_VALIDATION:
 			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
 				syncInfo["headers"] = Json::Value(Json::nullValue);
 				syncInfo["headers_total"] = Json::Value(Json::nullValue);
 				syncInfo["kernel_pos"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
@@ -98,8 +101,17 @@ public:
 				hasSyncInfo = true;
 				break;
 			}
+			case ESyncStatus::TXHASHSET_KERNEL_SUMS_VALIDATION:
+			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
+				syncInfo["items"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
+				syncInfo["items_total"] = Json::UInt64(pSyncStatus->GetProcessingTotal());
+				hasSyncInfo = true;
+				break;
+			}
 			case ESyncStatus::TXHASHSET_RANGE_PROOFS_VALIDATION:
 			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
 				syncInfo["rproofs"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
 				syncInfo["rproofs_total"] = Json::UInt64(pSyncStatus->GetProcessingTotal());
 				hasSyncInfo = true;
@@ -107,6 +119,7 @@ public:
 			}
 			case ESyncStatus::TXHASHSET_KERNEL_SIGNATURES_VALIDATION:
 			{
+				AddProcessingProgress(syncInfo, *pSyncStatus);
 				syncInfo["kernels"] = Json::UInt64(pSyncStatus->GetProcessingCurrent());
 				syncInfo["kernels_total"] = Json::UInt64(pSyncStatus->GetProcessingTotal());
 				hasSyncInfo = true;
@@ -198,6 +211,28 @@ public:
 		}
 
 		return "unknown";
+	}
+
+	static std::string GetHeaderSyncTypeString(const EHeaderSyncType headerSyncType)
+	{
+		switch (headerSyncType)
+		{
+			case EHeaderSyncType::LEGACY:
+				return "legacy";
+			case EHeaderSyncType::PIHD:
+				return "pihd";
+			case EHeaderSyncType::UNKNOWN:
+				return "unknown";
+		}
+
+		return "unknown";
+	}
+
+	static void AddProcessingProgress(Json::Value& syncInfo, const SyncStatus& syncStatus)
+	{
+		syncInfo["percent"] = syncStatus.GetProcessingStatus();
+		syncInfo["current"] = Json::UInt64(syncStatus.GetProcessingCurrent());
+		syncInfo["total"] = Json::UInt64(syncStatus.GetProcessingTotal());
 	}
 
 	static std::string GetChainString()

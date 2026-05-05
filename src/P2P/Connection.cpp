@@ -16,6 +16,20 @@
 static constexpr size_t MAX_MESSAGES_PER_MINUTE = 6000;
 static constexpr std::chrono::seconds DEFAULT_IDLE_TIMEOUT(60);
 
+static uint8_t GetAsyncSendPriority(const MessageTypes::EMessageType messageType)
+{
+    switch (messageType) {
+        case MessageTypes::OutputBitmapSegment:
+            return 4;
+        case MessageTypes::KernelSegment:
+        case MessageTypes::OutputSegment:
+        case MessageTypes::RangeProofSegment:
+            return 2;
+        default:
+            return 0;
+    }
+}
+
 void Connection::Connect()
 {
     std::thread connect_thr(Thread_Connect, shared_from_this());
@@ -96,7 +110,25 @@ void Connection::SendAsync(const IMessage& message)
             break;
     }
 
-    m_pSocket->SendAsync(serialized);
+    const auto sendStart = std::chrono::steady_clock::now();
+    const uint8_t sendPriority = GetAsyncSendPriority(message.GetMessageType());
+    m_pSocket->SendAsync(serialized, sendPriority);
+    switch (message.GetMessageType()) {
+        case MessageTypes::OutputBitmapSegment:
+        case MessageTypes::OutputSegment:
+        case MessageTypes::RangeProofSegment:
+        case MessageTypes::KernelSegment:
+            LOG_TRACE(StringUtil::Format(
+                "Queued {}b '{}' message to {} in {}ms (priority={}).",
+                serialized.size(),
+                MessageTypes::ToString(message.GetMessageType()),
+                m_pSocket,
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sendStart).count(),
+                sendPriority));
+            break;
+        default:
+            break;
+    }
 }
 
 bool Connection::ExceedsRateLimit() const

@@ -18,6 +18,8 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
 #include <optional>
 #include <limits>
 #include <chrono>
@@ -74,8 +76,48 @@ public:
 	bool IsPIBDValidationRunning() const;
 
 private:
+	struct PIBDSegmentServeRequest
+	{
+		SegmentType type;
+		std::shared_ptr<Connection> pConnection;
+		Hash blockHash;
+		SegmentIdentifier identifier;
+		std::chrono::steady_clock::time_point enqueuedAt;
+		uint64_t sequence;
+	};
+
+	struct PIBDSegmentBitmapCache
+	{
+		std::optional<Hash> blockHash;
+		uint64_t outputMMRSize{ 0 };
+		uint64_t numOutputs{ 0 };
+		std::shared_ptr<const BitmapAccumulator> pAccumulator;
+		std::optional<Hash> outputBitmapRoot;
+	};
+
 	void UpdatePIBDStatus(const bool aborted = false, const bool errored = false);
 	uint64_t GetPIBDCompletedToHeight() const;
+	bool EnqueuePIBDSegmentServeRequest(
+		const SegmentType type,
+		const std::shared_ptr<Connection>& pConnection,
+		const Hash& blockHash,
+		const SegmentIdentifier& identifier);
+	void Thread_ServePIBDSegments();
+	void ProcessPIBDSegmentServeRequest(PIBDSegmentServeRequest&& request);
+	void ProcessOutputBitmapSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier);
+	void ProcessOutputSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier);
+	void ProcessRangeProofSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier);
+	void ProcessKernelSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier);
+	std::deque<PIBDSegmentServeRequest>::iterator SelectNextPIBDSegmentServeRequest();
+	std::shared_ptr<const BitmapAccumulator> GetCachedOutputBitmapAccumulator(
+		const ITxHashSetConstPtr& pTxHashSet,
+		const Hash& blockHash,
+		const uint64_t outputMMRSize);
+	Hash GetCachedOutputBitmapRoot(
+		const ITxHashSetConstPtr& pTxHashSet,
+		const Hash& blockHash,
+		const uint64_t outputMMRSize,
+		const uint64_t numOutputs);
 	ITxHashSetConstPtr GetSegmentTxHashSet(const Hash& blockHash);
 	void MarkOutputBitmapSegmentServed(
 		const std::shared_ptr<Connection>& pConnection,
@@ -107,7 +149,12 @@ private:
 					UpdatePIBDStatus(false, true);
 				}
 			})),
-		m_processing(false) { }
+		m_processing(false)
+	{
+		for (size_t i = 0; i < PIBD_SEGMENT_SERVE_WORKERS; ++i) {
+			m_pibdSegmentServeWorkers.emplace_back(&TxHashSetPipe::Thread_ServePIBDSegments, this);
+		}
+	}
 
 	std::shared_ptr<ConnectionManager> m_pConnectionManager;
 	IBlockChain::Ptr m_pBlockChain;
@@ -132,6 +179,16 @@ private:
 	std::vector<std::thread> m_sendThreads;
 
 	std::atomic_bool m_processing;
+	static constexpr size_t PIBD_SEGMENT_SERVE_QUEUE_CAPACITY = 64;
+	static constexpr size_t PIBD_SEGMENT_SERVE_WORKERS = 4;
+	std::mutex m_pibdSegmentServeMutex;
+	std::condition_variable m_pibdSegmentServeCondition;
+	std::deque<PIBDSegmentServeRequest> m_pibdSegmentServeQueue;
+	std::vector<std::thread> m_pibdSegmentServeWorkers;
+	bool m_stopPIBDSegmentServeWorkers{ false };
+	std::atomic<uint64_t> m_pibdSegmentServeSequence{ 0 };
+	std::mutex m_pibdSegmentBitmapCacheMutex;
+	PIBDSegmentBitmapCache m_pibdSegmentBitmapCache;
 
 	mutable std::mutex m_pibdMutex;
 	std::optional<Hash> m_pibdBlockHash;
@@ -144,6 +201,8 @@ private:
 	size_t m_pibdNextPeerIndex{ 0 };
 	size_t m_uncommittedPIBDSegments{ 0 };
 	mutable std::mutex m_pibdSegmentTxHashSetMutex;
+	std::condition_variable m_pibdSegmentTxHashSetCondition;
+	std::optional<Hash> m_pibdSegmentTxHashSetCreatingHash;
 	std::optional<Hash> m_pibdSegmentTxHashSetHash;
 	ITxHashSetPtr m_pibdSegmentTxHashSet;
 	struct ServedOutputBitmapState

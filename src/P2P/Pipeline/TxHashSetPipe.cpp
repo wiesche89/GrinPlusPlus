@@ -25,6 +25,13 @@
 
 static const int BUFFER_SIZE = 128 * 1024;
 static const unsigned long TXHASHSET_RECEIVE_TIMEOUT_MS = 60 * 1000;
+
+static uint64_t ElapsedMillis(const std::chrono::steady_clock::time_point& start)
+{
+	return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - start).count();
+}
+
 static bool IsEligiblePIBDConnection(const Connection::Ptr& pConnection)
 {
 	return pConnection != nullptr && pConnection->IsConnectionActive();
@@ -58,6 +65,23 @@ static const char* GetPIBDSegmentTypeName(const SegmentType type) noexcept
 	return "unknown";
 }
 
+static uint8_t GetPIBDSegmentServeTypePriority(const SegmentType type) noexcept
+{
+	switch (type)
+	{
+		case SegmentType::OutputBitmap:
+			return 0;
+		case SegmentType::Output:
+			return 1;
+		case SegmentType::RangeProof:
+			return 2;
+		case SegmentType::Kernel:
+			return 3;
+	}
+
+	return 4;
+}
+
 static uint64_t GetPeerReportedHeight(const std::shared_ptr<ConnectionManager>& pConnectionManager, const PeerConstPtr& pPeer)
 {
 	if (pConnectionManager == nullptr || pPeer == nullptr) {
@@ -81,6 +105,13 @@ static std::string GetPIBDSegmentPeerKey(const Connection::Ptr& pConnection, con
 
 TxHashSetPipe::~TxHashSetPipe()
 {
+	{
+		std::lock_guard<std::mutex> lock(m_pibdSegmentServeMutex);
+		m_stopPIBDSegmentServeWorkers = true;
+	}
+	m_pibdSegmentServeCondition.notify_all();
+	ThreadUtil::JoinAll(m_pibdSegmentServeWorkers);
+
 	ThreadUtil::Join(m_txHashSetThread);
 	if (Global::IsRunning()) {
 		ThreadUtil::JoinAll(m_sendThreads);
@@ -271,6 +302,260 @@ void TxHashSetPipe::SendTxHashSet(const std::shared_ptr<Connection>& pConnection
 
 void TxHashSetPipe::SendOutputBitmapSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
+	EnqueuePIBDSegmentServeRequest(SegmentType::OutputBitmap, pConnection, blockHash, identifier);
+}
+
+void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+{
+	EnqueuePIBDSegmentServeRequest(SegmentType::Output, pConnection, blockHash, identifier);
+}
+
+void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+{
+	EnqueuePIBDSegmentServeRequest(SegmentType::RangeProof, pConnection, blockHash, identifier);
+}
+
+void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+{
+	EnqueuePIBDSegmentServeRequest(SegmentType::Kernel, pConnection, blockHash, identifier);
+}
+
+bool TxHashSetPipe::EnqueuePIBDSegmentServeRequest(
+	const SegmentType type,
+	const std::shared_ptr<Connection>& pConnection,
+	const Hash& blockHash,
+	const SegmentIdentifier& identifier)
+{
+	if (pConnection == nullptr) {
+		return false;
+	}
+
+	std::unique_lock<std::mutex> lock(m_pibdSegmentServeMutex);
+	if (m_stopPIBDSegmentServeWorkers || m_pibdSegmentServeQueue.size() >= PIBD_SEGMENT_SERVE_QUEUE_CAPACITY) {
+		LOG_DEBUG(StringUtil::Format("Dropping PIBD {} segment {}:{} for {} to {}; serve queue full ({}/{}).",
+			GetPIBDSegmentTypeName(type),
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			pConnection,
+			m_pibdSegmentServeQueue.size(),
+			PIBD_SEGMENT_SERVE_QUEUE_CAPACITY));
+		return false;
+	}
+
+	m_pibdSegmentServeQueue.push_back(PIBDSegmentServeRequest{
+		type,
+		pConnection,
+		blockHash,
+		identifier,
+		std::chrono::steady_clock::now(),
+		m_pibdSegmentServeSequence.fetch_add(1) });
+	const size_t queueSize = m_pibdSegmentServeQueue.size();
+	lock.unlock();
+	m_pibdSegmentServeCondition.notify_one();
+
+	LOG_TRACE(StringUtil::Format("Enqueued PIBD {} segment {}:{} for {} to {} (queue_depth={}/{}).",
+		GetPIBDSegmentTypeName(type),
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		pConnection,
+		queueSize,
+		PIBD_SEGMENT_SERVE_QUEUE_CAPACITY));
+	return true;
+}
+
+std::deque<TxHashSetPipe::PIBDSegmentServeRequest>::iterator TxHashSetPipe::SelectNextPIBDSegmentServeRequest()
+{
+	return std::min_element(
+		m_pibdSegmentServeQueue.begin(),
+		m_pibdSegmentServeQueue.end(),
+		[](const PIBDSegmentServeRequest& lhs, const PIBDSegmentServeRequest& rhs) {
+			const bool lhsBitmap = lhs.type == SegmentType::OutputBitmap;
+			const bool rhsBitmap = rhs.type == SegmentType::OutputBitmap;
+			if (lhsBitmap != rhsBitmap) {
+				return lhsBitmap;
+			}
+
+			const uint64_t lhsIndex = lhs.identifier.GetIndex();
+			const uint64_t rhsIndex = rhs.identifier.GetIndex();
+			if (lhsIndex != rhsIndex) {
+				return lhsIndex < rhsIndex;
+			}
+
+			const uint8_t lhsTypePriority = GetPIBDSegmentServeTypePriority(lhs.type);
+			const uint8_t rhsTypePriority = GetPIBDSegmentServeTypePriority(rhs.type);
+			if (lhsTypePriority != rhsTypePriority) {
+				return lhsTypePriority < rhsTypePriority;
+			}
+
+			return lhs.sequence < rhs.sequence;
+		});
+}
+
+void TxHashSetPipe::Thread_ServePIBDSegments()
+{
+	LoggerAPI::SetThreadName("PIBD_SEG_SERVE");
+	while (Global::IsRunning()) {
+		std::optional<PIBDSegmentServeRequest> request;
+		{
+			std::unique_lock<std::mutex> lock(m_pibdSegmentServeMutex);
+			m_pibdSegmentServeCondition.wait(lock, [this]() {
+				return m_stopPIBDSegmentServeWorkers || !m_pibdSegmentServeQueue.empty();
+			});
+
+			if (m_stopPIBDSegmentServeWorkers && m_pibdSegmentServeQueue.empty()) {
+				return;
+			}
+
+			const auto iter = SelectNextPIBDSegmentServeRequest();
+			request = std::move(*iter);
+			m_pibdSegmentServeQueue.erase(iter);
+			LOG_TRACE(StringUtil::Format("Starting PIBD {} segment {}:{} for {} to {} after {}ms (queue_depth_after_pop={}).",
+				GetPIBDSegmentTypeName(request->type),
+				request->identifier.GetHeight(),
+				request->identifier.GetIndex(),
+				request->blockHash,
+				request->pConnection,
+				ElapsedMillis(request->enqueuedAt),
+				m_pibdSegmentServeQueue.size()));
+		}
+
+		try {
+			ProcessPIBDSegmentServeRequest(std::move(request.value()));
+		} catch (const std::exception& e) {
+			LOG_WARNING(StringUtil::Format("Failed to serve PIBD segment request: {}", e.what()));
+		} catch (...) {
+			LOG_WARNING("Failed to serve PIBD segment request: unknown exception.");
+		}
+	}
+}
+
+void TxHashSetPipe::ProcessPIBDSegmentServeRequest(PIBDSegmentServeRequest&& request)
+{
+	LOG_TRACE(StringUtil::Format("PIBD {} segment worker start {}:{} for {} to {} (queued_ms={}).",
+		GetPIBDSegmentTypeName(request.type),
+		request.identifier.GetHeight(),
+		request.identifier.GetIndex(),
+		request.blockHash,
+		request.pConnection,
+		ElapsedMillis(request.enqueuedAt)));
+
+	const auto start = std::chrono::steady_clock::now();
+	if (!IsEligiblePIBDConnection(request.pConnection)) {
+		LOG_TRACE(StringUtil::Format("Skipping PIBD {} segment {}:{} for {}; connection is not active.",
+			GetPIBDSegmentTypeName(request.type),
+			request.identifier.GetHeight(),
+			request.identifier.GetIndex(),
+			request.blockHash));
+	} else {
+		switch (request.type)
+		{
+			case SegmentType::OutputBitmap:
+				ProcessOutputBitmapSegmentRequest(request.pConnection, request.blockHash, request.identifier);
+				break;
+			case SegmentType::Output:
+				ProcessOutputSegmentRequest(request.pConnection, request.blockHash, request.identifier);
+				break;
+			case SegmentType::RangeProof:
+				ProcessRangeProofSegmentRequest(request.pConnection, request.blockHash, request.identifier);
+				break;
+			case SegmentType::Kernel:
+				ProcessKernelSegmentRequest(request.pConnection, request.blockHash, request.identifier);
+				break;
+		}
+	}
+
+	const uint64_t totalMs = ElapsedMillis(start);
+	const std::string logMessage = StringUtil::Format("PIBD {} segment worker finish {}:{} for {} to {} (total_ms={}).",
+		GetPIBDSegmentTypeName(request.type),
+		request.identifier.GetHeight(),
+		request.identifier.GetIndex(),
+		request.blockHash,
+		request.pConnection,
+		totalMs);
+	if (totalMs >= 1000) {
+		LOG_DEBUG(logMessage);
+	} else {
+		LOG_TRACE(logMessage);
+	}
+}
+
+std::shared_ptr<const BitmapAccumulator> TxHashSetPipe::GetCachedOutputBitmapAccumulator(
+	const ITxHashSetConstPtr& pTxHashSet,
+	const Hash& blockHash,
+	const uint64_t outputMMRSize)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_pibdSegmentBitmapCacheMutex);
+		if (m_pibdSegmentBitmapCache.pAccumulator != nullptr
+			&& m_pibdSegmentBitmapCache.blockHash.has_value()
+			&& m_pibdSegmentBitmapCache.blockHash.value() == blockHash
+			&& m_pibdSegmentBitmapCache.outputMMRSize == outputMMRSize) {
+			LOG_TRACE(StringUtil::Format("PIBD output bitmap accumulator cache hit for {} (output_mmr_size={}).",
+				blockHash,
+				outputMMRSize));
+			return m_pibdSegmentBitmapCache.pAccumulator;
+		}
+	}
+
+	const auto start = std::chrono::steady_clock::now();
+	BitmapAccumulator accumulator = pTxHashSet->GetOutputBitmapAccumulator();
+	auto pAccumulator = std::make_shared<const BitmapAccumulator>(std::move(accumulator));
+	{
+		std::lock_guard<std::mutex> lock(m_pibdSegmentBitmapCacheMutex);
+		m_pibdSegmentBitmapCache.blockHash = blockHash;
+		m_pibdSegmentBitmapCache.outputMMRSize = outputMMRSize;
+		m_pibdSegmentBitmapCache.pAccumulator = pAccumulator;
+		m_pibdSegmentBitmapCache.outputBitmapRoot.reset();
+	}
+
+	LOG_TRACE(StringUtil::Format("PIBD output bitmap accumulator cache miss for {} (output_mmr_size={}) built in {}ms.",
+		blockHash,
+		outputMMRSize,
+		ElapsedMillis(start)));
+	return pAccumulator;
+}
+
+Hash TxHashSetPipe::GetCachedOutputBitmapRoot(
+	const ITxHashSetConstPtr& pTxHashSet,
+	const Hash& blockHash,
+	const uint64_t outputMMRSize,
+	const uint64_t numOutputs)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_pibdSegmentBitmapCacheMutex);
+		if (m_pibdSegmentBitmapCache.outputBitmapRoot.has_value()
+			&& m_pibdSegmentBitmapCache.blockHash.has_value()
+			&& m_pibdSegmentBitmapCache.blockHash.value() == blockHash
+			&& m_pibdSegmentBitmapCache.outputMMRSize == outputMMRSize
+			&& m_pibdSegmentBitmapCache.numOutputs == numOutputs) {
+			LOG_TRACE(StringUtil::Format("PIBD output bitmap root cache hit for {} (num_outputs={}).",
+				blockHash,
+				numOutputs));
+			return m_pibdSegmentBitmapCache.outputBitmapRoot.value();
+		}
+	}
+
+	const auto start = std::chrono::steady_clock::now();
+	const Hash outputBitmapRoot = pTxHashSet->GetOutputBitmapRoot(numOutputs);
+	{
+		std::lock_guard<std::mutex> lock(m_pibdSegmentBitmapCacheMutex);
+		m_pibdSegmentBitmapCache.blockHash = blockHash;
+		m_pibdSegmentBitmapCache.outputMMRSize = outputMMRSize;
+		m_pibdSegmentBitmapCache.numOutputs = numOutputs;
+		m_pibdSegmentBitmapCache.outputBitmapRoot = outputBitmapRoot;
+	}
+
+	LOG_TRACE(StringUtil::Format("PIBD output bitmap root cache miss for {} (num_outputs={}) built in {}ms.",
+		blockHash,
+		numOutputs,
+		ElapsedMillis(start)));
+	return outputBitmapRoot;
+}
+
+void TxHashSetPipe::ProcessOutputBitmapSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+{
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
 	if (pHeader == nullptr) {
 		LOG_DEBUG(StringUtil::Format("Cannot send output bitmap segment {}:{} for {}; header not found.",
@@ -280,7 +565,13 @@ void TxHashSetPipe::SendOutputBitmapSegment(const std::shared_ptr<Connection>& p
 		return;
 	}
 
+	const auto snapshotStart = std::chrono::steady_clock::now();
 	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	LOG_TRACE(StringUtil::Format("PIBD output bitmap segment {}:{} snapshot lookup for {} took {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(snapshotStart)));
 	if (pTxHashSet == nullptr) {
 		LOG_DEBUG(StringUtil::Format("Cannot send output bitmap segment {}:{} for {}; TxHashSet is not open.",
 			identifier.GetHeight(),
@@ -289,12 +580,35 @@ void TxHashSetPipe::SendOutputBitmapSegment(const std::shared_ptr<Connection>& p
 		return;
 	}
 
+	const auto buildStart = std::chrono::steady_clock::now();
 	std::optional<BitmapSegment> segment = pTxHashSet->GetOutputBitmapSegment(identifier);
+	LOG_TRACE(StringUtil::Format("Built PIBD output bitmap segment {}:{} for {} in {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(buildStart)));
 	if (segment.has_value()) {
+		const auto rootStart = std::chrono::steady_clock::now();
 		const Hash outputRoot = pTxHashSet->GetOutputRoot(pHeader->GetOutputMMRSize());
-		const BitmapAccumulator outputBitmap = pTxHashSet->GetOutputBitmapAccumulator();
-		pConnection->SendAsync(OutputBitmapSegmentMessage(blockHash, std::move(segment.value()), outputRoot));
-		MarkOutputBitmapSegmentServed(pConnection, blockHash, identifier, outputBitmap.GetMMRSize());
+		LOG_TRACE(StringUtil::Format("PIBD output root for bitmap segment {}:{} for {} built in {}ms.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(rootStart)));
+		const auto bitmapStart = std::chrono::steady_clock::now();
+		const std::shared_ptr<const BitmapAccumulator> pOutputBitmap = GetCachedOutputBitmapAccumulator(
+			pTxHashSet,
+			blockHash,
+			pHeader->GetOutputMMRSize());
+		LOG_TRACE(StringUtil::Format("PIBD output bitmap accumulator lookup for bitmap segment {}:{} for {} took {}ms.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(bitmapStart)));
+		if (IsEligiblePIBDConnection(pConnection)) {
+			pConnection->SendAsync(OutputBitmapSegmentMessage(blockHash, std::move(segment.value()), outputRoot));
+			MarkOutputBitmapSegmentServed(pConnection, blockHash, identifier, pOutputBitmap->GetMMRSize());
+		}
 	} else {
 		LOG_DEBUG(StringUtil::Format("No output bitmap segment {}:{} available for {}.",
 			identifier.GetHeight(),
@@ -303,29 +617,67 @@ void TxHashSetPipe::SendOutputBitmapSegment(const std::shared_ptr<Connection>& p
 	}
 }
 
-void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+void TxHashSetPipe::ProcessOutputSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
+	const auto snapshotStart = std::chrono::steady_clock::now();
 	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	LOG_TRACE(StringUtil::Format("PIBD output segment {}:{} snapshot lookup for {} took {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(snapshotStart)));
 	if (pHeader == nullptr || pTxHashSet == nullptr) {
 		return;
 	}
 
+	const auto buildStart = std::chrono::steady_clock::now();
 	std::optional<Segment<PIBD::OUTPUT_DATA_SIZE, OutputIdentifier>> segment = pTxHashSet->GetOutputSegment(identifier);
+	LOG_TRACE(StringUtil::Format("Built PIBD output segment {}:{} for {} in {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(buildStart)));
 	if (segment.has_value()) {
-		const BitmapAccumulator outputBitmap = pTxHashSet->GetOutputBitmapAccumulator();
-		if (ShouldDeferTxHashSetDataSegment(pConnection, blockHash, identifier, outputBitmap.GetMMRSize())) {
+		const auto bitmapStart = std::chrono::steady_clock::now();
+		const std::shared_ptr<const BitmapAccumulator> pOutputBitmap = GetCachedOutputBitmapAccumulator(
+			pTxHashSet,
+			blockHash,
+			pHeader->GetOutputMMRSize());
+		LOG_TRACE(StringUtil::Format("PIBD output bitmap accumulator lookup for output segment {}:{} for {} took {}ms.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(bitmapStart)));
+		if (ShouldDeferTxHashSetDataSegment(pConnection, blockHash, identifier, pOutputBitmap->GetMMRSize())) {
 			return;
 		}
 
-		const Hash outputBitmapRoot = pTxHashSet->GetOutputBitmapRoot(pHeader->GetNumOutputs());
+		const auto rootStart = std::chrono::steady_clock::now();
+		const Hash outputBitmapRoot = GetCachedOutputBitmapRoot(
+			pTxHashSet,
+			blockHash,
+			pHeader->GetOutputMMRSize(),
+			pHeader->GetNumOutputs());
+		LOG_TRACE(StringUtil::Format("PIBD output bitmap root lookup for output segment {}:{} for {} took {}ms.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(rootStart)));
+		const auto validateStart = std::chrono::steady_clock::now();
 		const bool validates = segment->ValidateWith(
 			pHeader->GetOutputMMRSize(),
 			pHeader->GetOutputRoot(),
 			pHeader->GetOutputMMRSize(),
 			outputBitmapRoot,
 			false,
-			&outputBitmap);
+			pOutputBitmap.get());
+		LOG_TRACE(StringUtil::Format("Validated PIBD output segment {}:{} for {} in {}ms (valid={}).",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(validateStart),
+			validates));
 		if (!validates) {
 			LOG_WARNING(StringUtil::Format("Not sending invalid PIBD output segment {}:{} for {}.",
 				identifier.GetHeight(),
@@ -343,7 +695,9 @@ void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnec
 			segment->GetHashes().size(),
 			segment->GetProof().GetHashes().size(),
 			outputBitmapRoot));
-		pConnection->SendAsync(OutputSegmentMessage(blockHash, std::move(segment.value()), outputBitmapRoot));
+		if (IsEligiblePIBDConnection(pConnection)) {
+			pConnection->SendAsync(OutputSegmentMessage(blockHash, std::move(segment.value()), outputBitmapRoot));
+		}
 	} else {
 		LOG_WARNING(StringUtil::Format("No PIBD output segment {}:{} available for {}.",
 			identifier.GetHeight(),
@@ -352,25 +706,53 @@ void TxHashSetPipe::SendOutputSegment(const std::shared_ptr<Connection>& pConnec
 	}
 }
 
-void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+void TxHashSetPipe::ProcessRangeProofSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
+	const auto snapshotStart = std::chrono::steady_clock::now();
 	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	LOG_TRACE(StringUtil::Format("PIBD rangeproof segment {}:{} snapshot lookup for {} took {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(snapshotStart)));
 	if (pHeader == nullptr || pTxHashSet == nullptr) {
 		return;
 	}
 
+	const auto buildStart = std::chrono::steady_clock::now();
 	std::optional<Segment<PIBD::RANGE_PROOF_DATA_SIZE, RangeProof>> segment = pTxHashSet->GetRangeProofSegment(identifier);
+	LOG_TRACE(StringUtil::Format("Built PIBD rangeproof segment {}:{} for {} in {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(buildStart)));
 	if (segment.has_value()) {
-		const BitmapAccumulator outputBitmap = pTxHashSet->GetOutputBitmapAccumulator();
-		if (ShouldDeferTxHashSetDataSegment(pConnection, blockHash, identifier, outputBitmap.GetMMRSize())) {
+		const auto bitmapStart = std::chrono::steady_clock::now();
+		const std::shared_ptr<const BitmapAccumulator> pOutputBitmap = GetCachedOutputBitmapAccumulator(
+			pTxHashSet,
+			blockHash,
+			pHeader->GetOutputMMRSize());
+		LOG_TRACE(StringUtil::Format("PIBD output bitmap accumulator lookup for rangeproof segment {}:{} for {} took {}ms.",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(bitmapStart)));
+		if (ShouldDeferTxHashSetDataSegment(pConnection, blockHash, identifier, pOutputBitmap->GetMMRSize())) {
 			return;
 		}
 
+		const auto validateStart = std::chrono::steady_clock::now();
 		const bool validatesWithBitmap = segment->Validate(
 			pHeader->GetOutputMMRSize(),
 			pHeader->GetRangeProofRoot(),
-			&outputBitmap);
+			pOutputBitmap.get());
+		LOG_TRACE(StringUtil::Format("Validated PIBD rangeproof segment {}:{} for {} in {}ms (valid={}).",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(validateStart),
+			validatesWithBitmap));
 		if (!validatesWithBitmap) {
 			LOG_WARNING(StringUtil::Format("Not sending invalid PIBD rangeproof segment {}:{} for {}.",
 				identifier.GetHeight(),
@@ -387,7 +769,9 @@ void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pCo
 			segment->GetLeaves().size(),
 			segment->GetHashes().size(),
 			segment->GetProof().GetHashes().size()));
-		pConnection->SendAsync(RangeProofSegmentMessage(blockHash, std::move(segment.value())));
+		if (IsEligiblePIBDConnection(pConnection)) {
+			pConnection->SendAsync(RangeProofSegmentMessage(blockHash, std::move(segment.value())));
+		}
 	} else {
 		LOG_WARNING(StringUtil::Format("No PIBD rangeproof segment {}:{} available for {}.",
 			identifier.GetHeight(),
@@ -396,15 +780,27 @@ void TxHashSetPipe::SendRangeProofSegment(const std::shared_ptr<Connection>& pCo
 	}
 }
 
-void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
+void TxHashSetPipe::ProcessKernelSegmentRequest(const std::shared_ptr<Connection>& pConnection, const Hash& blockHash, const SegmentIdentifier& identifier)
 {
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
+	const auto snapshotStart = std::chrono::steady_clock::now();
 	const auto pTxHashSet = GetSegmentTxHashSet(blockHash);
+	LOG_TRACE(StringUtil::Format("PIBD kernel segment {}:{} snapshot lookup for {} took {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(snapshotStart)));
 	if (pHeader == nullptr || pTxHashSet == nullptr) {
 		return;
 	}
 
+	const auto buildStart = std::chrono::steady_clock::now();
 	std::optional<Segment<PIBD::KERNEL_DATA_SIZE, TransactionKernel>> segment = pTxHashSet->GetKernelSegment(identifier);
+	LOG_TRACE(StringUtil::Format("Built PIBD kernel segment {}:{} for {} in {}ms.",
+		identifier.GetHeight(),
+		identifier.GetIndex(),
+		blockHash,
+		ElapsedMillis(buildStart)));
 	if (segment.has_value()) {
 		if (identifier.GetIndex() == 0 && std::find(segment->GetLeafPositions().begin(), segment->GetLeafPositions().end(), 0) == segment->GetLeafPositions().end()) {
 			LOG_WARNING(StringUtil::Format("Not sending PIBD kernel segment {}:{} for {}; Genesis kernel leaf at position 0 is missing.",
@@ -414,9 +810,16 @@ void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnec
 			return;
 		}
 
+		const auto validateStart = std::chrono::steady_clock::now();
 		const bool validates = segment->Validate(
 			pHeader->GetKernelMMRSize(),
 			pHeader->GetKernelRoot());
+		LOG_TRACE(StringUtil::Format("Validated PIBD kernel segment {}:{} for {} in {}ms (valid={}).",
+			identifier.GetHeight(),
+			identifier.GetIndex(),
+			blockHash,
+			ElapsedMillis(validateStart),
+			validates));
 		if (!validates) {
 			LOG_WARNING(StringUtil::Format("Not sending invalid PIBD kernel segment {}:{} for {}.",
 				identifier.GetHeight(),
@@ -425,7 +828,9 @@ void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnec
 			return;
 		}
 
-		pConnection->SendAsync(KernelSegmentMessage(blockHash, std::move(segment.value())));
+		if (IsEligiblePIBDConnection(pConnection)) {
+			pConnection->SendAsync(KernelSegmentMessage(blockHash, std::move(segment.value())));
+		}
 	} else {
 		LOG_WARNING(StringUtil::Format("No PIBD kernel segment {}:{} available for {}.",
 			identifier.GetHeight(),
@@ -436,41 +841,94 @@ void TxHashSetPipe::SendKernelSegment(const std::shared_ptr<Connection>& pConnec
 
 ITxHashSetConstPtr TxHashSetPipe::GetSegmentTxHashSet(const Hash& blockHash)
 {
-	std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
-
 	{
 		const auto txHashSetReader = m_pTxHashSetManager->Read();
 		const auto pLiveTxHashSet = txHashSetReader->GetTxHashSet();
 		if (pLiveTxHashSet != nullptr && pLiveTxHashSet->GetFlushedBlockHeader()->GetHash() == blockHash) {
+			LOG_TRACE(StringUtil::Format("PIBD segment TxHashSet live cache hit for {}.", blockHash));
 			return pLiveTxHashSet;
 		}
 	}
 
-	if (m_pibdSegmentTxHashSet != nullptr && m_pibdSegmentTxHashSetHash.has_value() && m_pibdSegmentTxHashSetHash.value() == blockHash) {
-		return m_pibdSegmentTxHashSet;
+	{
+		std::unique_lock<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+		while (m_pibdSegmentTxHashSetCreatingHash.has_value()) {
+			if (m_pibdSegmentTxHashSet != nullptr
+				&& m_pibdSegmentTxHashSetHash.has_value()
+				&& m_pibdSegmentTxHashSetHash.value() == blockHash) {
+				LOG_TRACE(StringUtil::Format("PIBD segment TxHashSet snapshot cache hit for {} while creating {}.",
+					blockHash,
+					m_pibdSegmentTxHashSetCreatingHash.value()));
+				return m_pibdSegmentTxHashSet;
+			}
+
+			LOG_TRACE(StringUtil::Format("PIBD segment TxHashSet snapshot wait for {}; currently creating {}.",
+				blockHash,
+				m_pibdSegmentTxHashSetCreatingHash.value()));
+			m_pibdSegmentTxHashSetCondition.wait(lock);
+		}
+
+		if (m_pibdSegmentTxHashSet != nullptr && m_pibdSegmentTxHashSetHash.has_value() && m_pibdSegmentTxHashSetHash.value() == blockHash) {
+			LOG_TRACE(StringUtil::Format("PIBD segment TxHashSet snapshot cache hit for {}.", blockHash));
+			return m_pibdSegmentTxHashSet;
+		}
+
+		LOG_DEBUG(StringUtil::Format("PIBD segment TxHashSet snapshot cache miss for {}.", blockHash));
+		m_pibdSegmentTxHashSetCreatingHash = blockHash;
 	}
 
 	const auto pHeader = m_pBlockChain->GetBlockHeaderByHash(blockHash);
 	if (pHeader == nullptr) {
 		LOG_DEBUG(StringUtil::Format("Cannot create PIBD segment TxHashSet for {}; header not found.", blockHash));
+		{
+			std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+			m_pibdSegmentTxHashSetCreatingHash.reset();
+		}
+		m_pibdSegmentTxHashSetCondition.notify_all();
 		return nullptr;
 	}
 
 	try
 	{
-		LOG_INFO(StringUtil::Format("Creating PIBD segment TxHashSet for {} at height {}.", blockHash, pHeader->GetHeight()));
-		m_pibdSegmentTxHashSet.reset();
-		m_pibdSegmentTxHashSet = m_pBlockChain->CreateTxHashSetSnapshot(pHeader);
-		m_pibdSegmentTxHashSetHash = blockHash;
+		const auto snapshotStart = std::chrono::steady_clock::now();
+		LOG_DEBUG(StringUtil::Format("Creating PIBD segment TxHashSet for {} at height {}.", blockHash, pHeader->GetHeight()));
+		ITxHashSetPtr pSnapshot = m_pBlockChain->CreateTxHashSetSnapshot(pHeader);
+		{
+			std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+			m_pibdSegmentTxHashSet = pSnapshot;
+			m_pibdSegmentTxHashSetHash = blockHash;
+			m_pibdSegmentTxHashSetCreatingHash.reset();
+		}
+		{
+			std::lock_guard<std::mutex> lock(m_pibdSegmentBitmapCacheMutex);
+			m_pibdSegmentBitmapCache = PIBDSegmentBitmapCache();
+		}
+		m_pibdSegmentTxHashSetCondition.notify_all();
 
-		LOG_INFO(StringUtil::Format("PIBD segment TxHashSet ready for {} at height {}.", blockHash, pHeader->GetHeight()));
-		return m_pibdSegmentTxHashSet;
+		LOG_DEBUG(StringUtil::Format("PIBD segment TxHashSet ready for {} at height {} in {}ms.",
+			blockHash,
+			pHeader->GetHeight(),
+			ElapsedMillis(snapshotStart)));
+		return pSnapshot;
 	}
 	catch (std::exception& e)
 	{
 		LOG_WARNING(StringUtil::Format("Failed to create PIBD segment TxHashSet for {}: {}", blockHash, e.what()));
-		m_pibdSegmentTxHashSet.reset();
-		m_pibdSegmentTxHashSetHash.reset();
+		{
+			std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+			m_pibdSegmentTxHashSetCreatingHash.reset();
+		}
+		m_pibdSegmentTxHashSetCondition.notify_all();
+		return nullptr;
+	}
+	catch (...)
+	{
+		LOG_WARNING(StringUtil::Format("Failed to create PIBD segment TxHashSet for {}: unknown exception.", blockHash));
+		{
+			std::lock_guard<std::mutex> lock(m_pibdSegmentTxHashSetMutex);
+			m_pibdSegmentTxHashSetCreatingHash.reset();
+		}
+		m_pibdSegmentTxHashSetCondition.notify_all();
 		return nullptr;
 	}
 }
@@ -505,28 +963,10 @@ bool TxHashSetPipe::ShouldDeferTxHashSetDataSegment(
 	const SegmentIdentifier& requestedIdentifier,
 	const uint64_t bitmapMMRSize) const
 {
+	(void)pConnection;
+	(void)blockHash;
 	(void)requestedIdentifier;
-	const size_t totalBitmapSegments = SegmentIdentifier::CountSegmentsRequired(
-		bitmapMMRSize,
-		PIBD::BITMAP_SEGMENT_HEIGHT);
-	if (totalBitmapSegments == 0) {
-		return false;
-	}
-
-	std::lock_guard<std::mutex> lock(m_servedBitmapSegmentsMutex);
-	const auto iter = m_servedBitmapSegments.find(GetPIBDSegmentPeerKey(pConnection, blockHash));
-	if (iter == m_servedBitmapSegments.end()) {
-		return true;
-	}
-
-	if (iter->second.segmentIndices.size() < totalBitmapSegments) {
-		return true;
-	}
-
-	if (!iter->second.completedAt.has_value()) {
-		iter->second.completedAt = std::chrono::steady_clock::now();
-	}
-
+	(void)bitmapMMRSize;
 	return false;
 }
 
