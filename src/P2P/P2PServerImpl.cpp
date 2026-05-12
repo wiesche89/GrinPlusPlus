@@ -129,12 +129,27 @@ std::optional<PeerConstPtr> P2PServer::GetPeer(const IPAddress& address) const
 	return m_pPeerManager->Read()->GetPeer(address);
 }
 
+std::optional<PeerConstPtr> P2PServer::GetPeer(const SocketAddress& address) const
+{
+	return m_pPeerManager->Read()->GetPeer(address);
+}
+
 void P2PServer::BanPeer(const IPAddress& address, const EBanReason banReason)
 {
 	m_pPeerManager->Write()->BanPeer(address, banReason);
 }
 
+void P2PServer::BanPeer(const SocketAddress& address, const EBanReason banReason)
+{
+	m_pPeerManager->Write()->BanPeer(address, banReason);
+}
+
 void P2PServer::UnbanPeer(const IPAddress& address)
+{
+	m_pPeerManager->Write()->UnbanPeer(address);
+}
+
+void P2PServer::UnbanPeer(const SocketAddress& address)
 {
 	m_pPeerManager->Write()->UnbanPeer(address);
 }

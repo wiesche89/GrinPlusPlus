@@ -1,16 +1,18 @@
 #pragma once
 
 #include <BlockChain/BlockChain.h>
+#include <Database/Database.h>
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
 #include <API/Wallet/Owner/Models/Errors.h>
+#include "NodeAPIUtils.h"
 #include <optional>
 
 class GetBlockHandler : public RPCMethod
 {
 public:
-	GetBlockHandler(const IBlockChain::Ptr& pBlockChain)
-		: m_pBlockChain(pBlockChain) { }
+	GetBlockHandler(const IBlockChain::Ptr& pBlockChain, const IDatabasePtr& pDatabase)
+		: m_pBlockChain(pBlockChain), m_pDatabase(pDatabase) { }
 	~GetBlockHandler() = default;
 
 	RPC::Response Handle(const RPC::Request& request) const final
@@ -29,13 +31,11 @@ public:
 			const uint64_t height = JsonUtil::ConvertToUInt64(params[0]);
 			pBlock = m_pBlockChain->GetBlockByHeight(height);
 		}
-
-		if (!params[1].isNull()) {
+		else if (!params[1].isNull()) {
 			const Hash hash = JsonUtil::ConvertToHash(params[1]);
 			pBlock = m_pBlockChain->GetBlockByHash(hash);
 		}
-
-		if (!params[2].isNull()) {
+		else if (!params[2].isNull()) {
 			const Commitment commitment = JsonUtil::ConvertToCommitment(params[2]);
 			pBlock = m_pBlockChain->GetBlockByCommitment(commitment);
 		}
@@ -44,8 +44,14 @@ public:
 			return request.BuildError("NOT_FOUND", "Block not found");
 		}
 
+		Json::Value blockJson;
+		{
+			auto pBlockDB = m_pDatabase->GetBlockDB()->Read();
+			blockJson = NodeAPI::BuildBlockPrintable(*pBlock, pBlockDB.GetShared(), true);
+		}
+
 		Json::Value result;
-		result["Ok"] = pBlock->ToJSON();
+		result["Ok"] = blockJson;
 		return request.BuildResult(result);
 	}
 
@@ -53,4 +59,5 @@ public:
 
 private:
 	IBlockChain::Ptr m_pBlockChain;
+	IDatabasePtr m_pDatabase;
 };

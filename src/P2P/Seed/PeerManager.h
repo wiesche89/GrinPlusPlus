@@ -29,6 +29,7 @@ public:
 	PeerPtr GetPeer(const SocketAddress& address);
 	PeerPtr GetPeer(const IPAddress& address);
 	std::optional<PeerConstPtr> GetPeer(const IPAddress& address) const;
+	std::optional<PeerConstPtr> GetPeer(const SocketAddress& address) const;
 
 	std::vector<PeerPtr> GetAllPeers();
 	std::vector<PeerConstPtr> GetAllPeers() const;
@@ -38,7 +39,9 @@ public:
 
 	void AddFreshPeers(const std::vector<SocketAddress>& peerAddresses);
 	void BanPeer(const IPAddress& address, const EBanReason banReason);
+	void BanPeer(const SocketAddress& address, const EBanReason banReason);
 	void UnbanPeer(const IPAddress& address);
+	void UnbanPeer(const SocketAddress& address);
 
 private:
 	PeerManager(const std::shared_ptr<Context>& pContext, std::shared_ptr<Locked<IPeerDB>> pPeerDB);

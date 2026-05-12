@@ -117,9 +117,7 @@ public:
 			--height;
 		}
 
-		Json::Value result;
-		result["Ok"] = Json::nullValue;
-		return request.BuildResult(result);
+		return request.BuildError("NOT_FOUND", "Kernel not found");
 	}
 
 	bool ContainsSecrets() const noexcept final { return false; }

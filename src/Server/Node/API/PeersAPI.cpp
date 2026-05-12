@@ -84,24 +84,36 @@ int PeersAPI::Peer_Handler(struct mg_connection* conn, void* pNodeContext)
 	{
 		const HTTP::EHTTPMethod method = HTTPUtil::GetHTTPMethod(conn);
 
+		const std::optional<SocketAddress> socketAddressOpt = ParseSocketAddress(requestedPeer);
 		const std::string ipAddressStr = ParseIPAddress(requestedPeer);
 		IPAddress ipAddress = IPAddress::Parse(ipAddressStr);
 
 		const std::string commandStr = ParseCommand(requestedPeer);
 		if (commandStr == "ban" && method == HTTP::EHTTPMethod::POST)
 		{
-			pServer->m_pP2PServer->BanPeer(ipAddress, EBanReason::ManualBan);
+			if (socketAddressOpt.has_value()) {
+				pServer->m_pP2PServer->BanPeer(socketAddressOpt.value(), EBanReason::ManualBan);
+			} else {
+				pServer->m_pP2PServer->BanPeer(ipAddress, EBanReason::ManualBan);
+			}
+
 			return HTTPUtil::BuildSuccessResponse(conn, "");
 		}
 		else if (commandStr == "unban" && method == HTTP::EHTTPMethod::POST)
 		{
-			pServer->m_pP2PServer->UnbanPeer(ipAddress);
+			if (socketAddressOpt.has_value()) {
+				pServer->m_pP2PServer->UnbanPeer(socketAddressOpt.value());
+			} else {
+				pServer->m_pP2PServer->UnbanPeer(ipAddress);
+			}
 
 			return HTTPUtil::BuildSuccessResponse(conn, "");
 		}
 		else if (commandStr == "" && method == HTTP::EHTTPMethod::GET)
 		{
-			std::optional<PeerConstPtr> peerOpt = pServer->m_pP2PServer->GetPeer(ipAddress);
+			std::optional<PeerConstPtr> peerOpt = socketAddressOpt.has_value()
+				? pServer->m_pP2PServer->GetPeer(socketAddressOpt.value())
+				: pServer->m_pP2PServer->GetPeer(ipAddress);
 			if (peerOpt.has_value())
 			{
 				return HTTPUtil::BuildSuccessResponse(
@@ -125,6 +137,19 @@ int PeersAPI::Peer_Handler(struct mg_connection* conn, void* pNodeContext)
 	}
 
 	return HTTPUtil::BuildNotFoundResponse(conn, "Peer not found.");
+}
+
+std::optional<SocketAddress> PeersAPI::ParseSocketAddress(const std::string& request)
+{
+	const std::size_t slashPos = request.find("/");
+	const std::string peer = slashPos != std::string::npos ? request.substr(0, slashPos) : request;
+	const std::size_t colonPos = peer.find(":");
+	if (colonPos == std::string::npos)
+	{
+		return std::nullopt;
+	}
+
+	return SocketAddress::Parse(peer);
 }
 
 std::string PeersAPI::ParseIPAddress(const std::string& request)

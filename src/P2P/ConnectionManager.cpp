@@ -202,30 +202,40 @@ ConnectionPtr ConnectionManager::GetConnection(const uint64_t connectionId) cons
 
 void ConnectionManager::PruneConnections(const bool bInactiveOnly)
 {
-	auto connectionsWriter = m_connections.Write();
-	std::vector<ConnectionPtr>& connections = *connectionsWriter;
+	std::vector<ConnectionPtr> connectionsToDisconnect;
 
-	for (auto iter = connections.begin(); iter < connections.end(); iter++) {
-		ConnectionPtr pConnection = *iter;
-		if (!bInactiveOnly || !pConnection->IsConnectionActive()) {
-			try { 
-				pConnection->Disconnect();
+	{
+		auto connectionsWriter = m_connections.Write();
+		std::vector<ConnectionPtr>& connections = *connectionsWriter;
+
+		for (auto iter = connections.begin(); iter != connections.end(); ) {
+			ConnectionPtr pConnection = *iter;
+			if (!bInactiveOnly || !pConnection->IsConnectionActive()) {
+				connectionsToDisconnect.push_back(pConnection);
+				iter = connections.erase(iter);
+			} else {
+				++iter;
 			}
-			catch (std::exception& e) {
-				LOG_ERROR("Error disconnecting: {}", e.what());
-			}
-			connections.erase(iter);
 		}
+
+		m_numInbound = std::accumulate(
+			connections.begin(), connections.end(), (size_t)0,
+			[](size_t inbound, const ConnectionPtr& pConnection) {
+				return pConnection->GetDirection() == EDirection::INBOUND ? inbound + 1 : inbound;
+			}
+		);
+
+		m_numOutbound = connections.size() - m_numInbound;
 	}
 
-	m_numInbound = std::accumulate(
-		connections.begin(), connections.end(), (size_t)0,
-		[](size_t inbound, const ConnectionPtr& pConnection) {
-			return pConnection->GetDirection() == EDirection::INBOUND ? inbound + 1 : inbound;
+	for (ConnectionPtr& pConnection : connectionsToDisconnect) {
+		try {
+			pConnection->Disconnect();
 		}
-	);
-
-	m_numOutbound = connections.size() - m_numInbound;
+		catch (std::exception& e) {
+			LOG_ERROR("Error disconnecting: {}", e.what());
+		}
+	}
 }
 
 ConnectionPtr ConnectionManager::GetMostWorkPeer(const std::vector<ConnectionPtr>& connections) const

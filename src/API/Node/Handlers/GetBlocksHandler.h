@@ -3,14 +3,16 @@
 #include <BlockChain/BlockChain.h>
 #include <Core/Models/FullBlock.h>
 #include <Core/Util/JsonUtil.h>
+#include <Database/Database.h>
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
+#include "NodeAPIUtils.h"
 
 class GetBlocksHandler : public RPCMethod
 {
 public:
-	explicit GetBlocksHandler(const IBlockChain::Ptr& pBlockChain)
-		: m_pBlockChain(pBlockChain) { }
+	explicit GetBlocksHandler(const IBlockChain::Ptr& pBlockChain, const IDatabasePtr& pDatabase)
+		: m_pBlockChain(pBlockChain), m_pDatabase(pDatabase) { }
 	~GetBlocksHandler() override = default;
 
 	RPC::Response Handle(const RPC::Request& request) const final
@@ -43,12 +45,11 @@ public:
 		{
 			maxBlocks = JsonUtil::ConvertToUInt64(params[2]);
 		}
-		if (maxBlocks == 0)
+		if (maxBlocks > 1000)
 		{
-			maxBlocks = 1;
+			maxBlocks = 1000;
 		}
-
-		bool includeProof = true;
+		bool includeProof = false;
 		if (params.size() > 3 && !params[3].isNull())
 		{
 			includeProof = params[3].asBool();
@@ -56,64 +57,40 @@ public:
 
 		if (endHeight < startHeight)
 		{
-			endHeight = startHeight;
-		}
+			Json::Value listing;
+			listing["last_retrieved_height"] = Json::UInt64(0);
+			listing["blocks"] = Json::Value(Json::arrayValue);
 
-		const BlockHeaderPtr pTip = m_pBlockChain->GetTipBlockHeader(EChainType::CONFIRMED);
-		if (pTip == nullptr)
-		{
-			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "Failed to retrieve chain tip");
-		}
-
-			if (startHeight > pTip->GetHeight())
-	{
-		Json::Value listing;
-		listing["last_retrieved_height"] = Json::UInt64(pTip->GetHeight());
-		listing["blocks"] = Json::Value(Json::arrayValue);
-
-		Json::Value result;
-		result["Ok"] = listing;
-		return request.BuildResult(result);
-	}
-
-	if (endHeight > pTip->GetHeight())
-		{
-			endHeight = pTip->GetHeight();
+			Json::Value result;
+			result["Ok"] = listing;
+			return request.BuildResult(result);
 		}
 
 		Json::Value blocks(Json::arrayValue);
 		uint64_t lastRetrievedHeight = startHeight;
 		uint64_t count = 0;
 
-		for (uint64_t height = startHeight; height <= endHeight && count < maxBlocks; ++height)
+		for (uint64_t height = startHeight; height <= endHeight; ++height)
 		{
+			lastRetrievedHeight = height;
 			std::unique_ptr<FullBlock> pBlock = m_pBlockChain->GetBlockByHeight(height);
 			if (pBlock == nullptr)
 			{
 				continue;
 			}
 
-			Json::Value blockJson = pBlock->ToJSON();
-			if (!includeProof && blockJson.isMember("outputs"))
+			Json::Value blockJson;
 			{
-				Json::Value& outputs = blockJson["outputs"];
-				if (outputs.isArray())
-				{
-					for (Json::Value::ArrayIndex i = 0; i < outputs.size(); ++i)
-					{
-						outputs[i].removeMember("proof");
-					}
-				}
+				auto pBlockDB = m_pDatabase->GetBlockDB()->Read();
+				blockJson = NodeAPI::BuildBlockPrintable(*pBlock, pBlockDB.GetShared(), includeProof);
 			}
 
 			blocks.append(blockJson);
-			lastRetrievedHeight = height;
 			++count;
-		}
-
-		if (blocks.empty())
-		{
-			lastRetrievedHeight = startHeight;
+			if (maxBlocks > 0 && count == maxBlocks)
+			{
+				break;
+			}
 		}
 
 		Json::Value listing;
@@ -129,4 +106,5 @@ public:
 
 private:
 	IBlockChain::Ptr m_pBlockChain;
+	IDatabasePtr m_pDatabase;
 };

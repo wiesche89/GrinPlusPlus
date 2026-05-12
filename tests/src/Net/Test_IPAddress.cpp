@@ -20,3 +20,13 @@ TEST_CASE("IPAddress")
     REQUIRE(ipv6.Serialized() == std::vector<uint8_t>{ 0x01, 0x05, 0x10, 0x15, 0x20, 0x25, 0x30, 0x35, 0x40, 0x45, 0x50, 0x55, 0x60, 0x65, 0x70, 0x75, 0x80 });
     REQUIRE(ByteBuffer(ipv6.Serialized()).Read<IPAddress>() == ipv6);
 }
+
+TEST_CASE("IPAddress::IsRoutable")
+{
+    REQUIRE(IPAddress::Parse("70.50.33.130").IsRoutable());
+    REQUIRE_FALSE(IPAddress::Parse("192.168.178.20").IsRoutable());
+    REQUIRE_FALSE(IPAddress::Parse("10.0.0.1").IsRoutable());
+    REQUIRE_FALSE(IPAddress::Parse("172.16.0.1").IsRoutable());
+    REQUIRE_FALSE(IPAddress::Parse("127.0.0.1").IsRoutable());
+    REQUIRE_FALSE(IPAddress::Parse("169.254.1.1").IsRoutable());
+}

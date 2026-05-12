@@ -4,6 +4,7 @@
 #include <BlockChain/BlockChain.h>
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
+#include "NodeAPIUtils.h"
 #include <optional>
 
 class UnbanPeerHandler : public RPCMethod
@@ -36,22 +37,19 @@ public:
 		}
 		else
 		{
-			std::unordered_set<IPAddress> peersWanted;
-
-			std::transform(
-				values_json.cbegin(), values_json.cend(),
-				std::inserter(peersWanted, peersWanted.end()),
-				[](const Json::Value& peer_json) {
-					std::optional<std::string> peer = JsonUtil::ConvertToStringOpt(peer_json);
-					return IPAddress::Parse(peer.value());
-				}
-			);
-			auto peer = *(peersWanted.begin());
-			m_pP2PServer->UnbanPeer(peer);
+			try
+			{
+				const SocketAddress peer = NodeAPI::ParseSocketAddrParam(values_json[0]);
+				m_pP2PServer->UnbanPeer(peer);
+			}
+			catch (const std::exception&)
+			{
+				return request.BuildError("INVALID_PARAMS", "Invalid peer address");
+			}
 		}
 
 		Json::Value result;
-		result["Ok"] = "";
+		result["Ok"] = Json::nullValue;
 
 		return request.BuildResult(result);
 	}

@@ -6,76 +6,60 @@
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
 #include <Crypto/Hasher.h>
+#include "NodeAPIUtils.h"
 
 class GetPMMRIndicesHandler : public RPCMethod
 {
 public:
-	GetPMMRIndicesHandler(const std::weak_ptr<ITxHashSet>& pTxHashSet, const IDatabasePtr& pDatabase)
-		: m_pTxHashSet(pTxHashSet), m_pDatabase(pDatabase) { }
+	GetPMMRIndicesHandler(
+		const std::weak_ptr<ITxHashSet>& pTxHashSet,
+		const IDatabasePtr& pDatabase,
+		const IBlockChain::Ptr& pBlockChain)
+		: m_pTxHashSet(pTxHashSet), m_pDatabase(pDatabase), m_pBlockChain(pBlockChain) { }
 	~GetPMMRIndicesHandler() override = default;
 
 	RPC::Response Handle(const RPC::Request& request) const final
 	{
-		auto pTxHashSet = m_pTxHashSet.lock();
-		if (!pTxHashSet)
+		if (m_pBlockChain == nullptr)
 		{
-			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "TxHashSet not available");
+			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "BlockChain unavailable");
 		}
 
-		uint64_t startIndex = 1;
-		uint64_t max = 100;
-
-		if (request.GetParams().has_value())
+		if (!request.GetParams().has_value())
 		{
-			const Json::Value& params = request.GetParams().value();
-			if (!params.isArray())
-			{
-				return request.BuildError("INVALID_PARAMS", "Expected params array");
-			}
-
-			if (params.size() > 0 && !params[0].isNull())
-			{
-				startIndex = JsonUtil::ConvertToUInt64(params[0]);
-			}
-
-			if (params.size() > 1 && !params[1].isNull())
-			{
-				max = JsonUtil::ConvertToUInt64(params[1]);
-			}
+			return request.BuildError(RPC::Errors::PARAMS_MISSING);
 		}
 
-		if (max > 1000)
+		uint64_t startBlockHeight = 0;
+		std::optional<uint64_t> endBlockHeight = std::nullopt;
+
+		const Json::Value& params = request.GetParams().value();
+		if (!params.isArray())
 		{
-			max = 1000;
+			return request.BuildError("INVALID_PARAMS", "Expected params array");
+		}
+		if (params.size() == 0 || params[0].isNull())
+		{
+			return request.BuildError("INVALID_PARAMS", "Expected parameters: start_block_height, end_block_height");
 		}
 
-		auto pBlockDB = m_pDatabase->GetBlockDB()->Read();
-		OutputRange range = pTxHashSet->GetOutputsByLeafIndex(pBlockDB.GetShared(), startIndex, max);
-
-		Json::Value outputs(Json::arrayValue);
-		for (const OutputDTO& info : range.GetOutputs())
+		startBlockHeight = JsonUtil::ConvertToUInt64(params[0]);
+		if (params.size() > 1 && !params[1].isNull())
 		{
-			Json::Value output;
-			output["output_type"] = OutputFeatures::ToString(info.GetIdentifier().GetFeatures());
-			output["commit"] = info.GetIdentifier().GetCommitment().ToHex();
-			output["spent"] = info.IsSpent();
-			output["proof"] = info.GetRangeProof().Format();
+			endBlockHeight = JsonUtil::ConvertToUInt64(params[1]);
+		}
 
-			Serializer proofSerializer;
-			info.GetRangeProof().Serialize(proofSerializer);
-			output["proof_hash"] = Hasher::Blake2b(proofSerializer.GetBytes()).ToHex();
-
-			output["block_height"] = info.GetLocation().GetBlockHeight();
-			output["merkle_proof"] = Json::nullValue;
-			output["mmr_index"] = info.GetLeafIndex().GetPosition() + 1;
-
-			outputs.append(output);
+		uint64_t startMMRIndex = 0;
+		uint64_t endMMRIndex = 0;
+		if (!NodeAPI::TryGetPMMRIndexRange(m_pBlockChain, startBlockHeight, endBlockHeight, startMMRIndex, endMMRIndex))
+		{
+			return request.BuildError("NOT_FOUND", "Block height range not found");
 		}
 
 		Json::Value ok;
-		ok["highest_index"] = Json::UInt64(range.GetHighestIndex());
-		ok["last_retrieved_index"] = Json::UInt64(range.GetLastRetrievedIndex());
-		ok["outputs"] = outputs;
+		ok["highest_index"] = Json::UInt64(endMMRIndex);
+		ok["last_retrieved_index"] = Json::UInt64(startMMRIndex);
+		ok["outputs"] = Json::Value(Json::arrayValue);
 
 		Json::Value result;
 		result["Ok"] = ok;
@@ -88,4 +72,5 @@ public:
 private:
 	std::weak_ptr<ITxHashSet> m_pTxHashSet;
 	IDatabasePtr m_pDatabase;
+	IBlockChain::Ptr m_pBlockChain;
 };

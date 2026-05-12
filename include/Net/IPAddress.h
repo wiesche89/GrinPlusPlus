@@ -130,6 +130,30 @@ public:
     bool IsV4() const noexcept { return m_address.is_v4(); }
     bool IsV6() const noexcept { return m_address.is_v6(); }
     bool IsLocalhost() const noexcept { return m_address.is_loopback(); }
+    bool IsRoutable() const noexcept
+    {
+        if (m_address.is_unspecified() || m_address.is_loopback() || m_address.is_multicast())
+        {
+            return false;
+        }
+
+        if (m_address.is_v4())
+        {
+            const auto bytes = m_address.to_v4().to_bytes();
+            return bytes[0] != 10
+                && !(bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                && !(bytes[0] == 192 && bytes[1] == 168)
+                && !(bytes[0] == 169 && bytes[1] == 254)
+                && !(bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127)
+                && bytes[0] != 0
+                && bytes[0] < 224;
+        }
+
+        const auto bytes = m_address.to_v6().to_bytes();
+        return bytes[0] != 0xfc
+            && bytes[0] != 0xfd
+            && !(bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80);
+    }
     std::string Format() const final { return m_address.to_string(); }
 
     //

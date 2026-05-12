@@ -29,13 +29,11 @@ public:
 			const uint64_t height = JsonUtil::ConvertToUInt64(params[0]);
 			pHeader = m_pBlockChain->GetBlockHeaderByHeight(height, EChainType::CONFIRMED);
 		}
-
-		if (!params[1].isNull()) {
+		else if (!params[1].isNull()) {
 			const Hash hash = JsonUtil::ConvertToHash(params[1]);
 			pHeader = m_pBlockChain->GetBlockHeaderByHash(hash);
 		}
-
-		if (!params[2].isNull()) {
+		else if (!params[2].isNull()) {
 			const Commitment commitment = JsonUtil::ConvertToCommitment(params[2]);
 			pHeader = m_pBlockChain->GetBlockHeaderByCommitment(commitment);
 		}

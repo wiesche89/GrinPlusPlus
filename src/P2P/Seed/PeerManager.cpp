@@ -164,6 +164,24 @@ std::optional<PeerConstPtr> PeerManager::GetPeer(const IPAddress& address) const
     return m_pPeerDB->Read()->GetPeer(address, std::nullopt);
 }
 
+std::optional<PeerConstPtr> PeerManager::GetPeer(const SocketAddress& address) const
+{
+    auto iter = m_peersByAddress.find(address);
+    if (iter != m_peersByAddress.cend()) {
+        return std::make_optional(iter->second.m_peer);
+    }
+
+    if (address.GetPortNumber() > 0) {
+        const SocketAddress addressWithoutPort(address.GetIPAddress(), 0);
+        auto peerWithoutPort = m_peersByAddress.find(addressWithoutPort);
+        if (peerWithoutPort != m_peersByAddress.cend()) {
+            return std::make_optional(peerWithoutPort->second.m_peer);
+        }
+    }
+
+    return m_pPeerDB->Read()->GetPeer(address.GetIPAddress(), address.GetPortNumber());
+}
+
 PeerPtr PeerManager::GetNewPeer(const Capabilities::ECapability& preferredCapability)
 {
     std::vector<PeerPtr> peers = GetPeersWithCapability(preferredCapability, 1, true);
@@ -219,6 +237,11 @@ std::vector<PeerPtr> PeerManager::GetPeers(
 void PeerManager::AddFreshPeers(const std::vector<SocketAddress>& peerAddresses)
 {
     for (auto& socketAddress : peerAddresses) {
+        if (!socketAddress.GetIPAddress().IsRoutable()) {
+            LOG_TRACE_F("Ignoring non-routable peer address: {}", socketAddress);
+            continue;
+        }
+
         auto iter = m_peersByAddress.find(socketAddress);
         if (iter == m_peersByAddress.end()) {
             PeerPtr peer = std::make_shared<Peer>(socketAddress.GetIPAddress(), socketAddress.GetPortNumber(), 0, Capabilities(Capabilities::UNKNOWN), "");
@@ -247,11 +270,54 @@ void PeerManager::BanPeer(const IPAddress& address, const EBanReason banReason)
     }
 }
 
+void PeerManager::BanPeer(const SocketAddress& address, const EBanReason banReason)
+{
+    auto iter = m_peersByAddress.find(address);
+    if (iter != m_peersByAddress.end()) {
+        iter->second.m_peer->Ban(banReason);
+        return;
+    }
+
+    if (address.GetPortNumber() > 0) {
+        const SocketAddress addressWithoutPort(address.GetIPAddress(), 0);
+        auto peerWithoutPort = m_peersByAddress.find(addressWithoutPort);
+        if (peerWithoutPort != m_peersByAddress.end()) {
+            PeerEntry entry = peerWithoutPort->second;
+            entry.m_peer->UpdatePort(address.GetPortNumber());
+            entry.m_peer->Ban(banReason);
+            m_peersByAddress.erase(peerWithoutPort);
+            m_peersByAddress.emplace(address, entry);
+            return;
+        }
+    }
+
+    PeerPtr peer = std::make_shared<Peer>(address.GetIPAddress(), address.GetPortNumber(), 0, Capabilities(0), "");
+    peer->Ban(banReason);
+    m_peersByAddress.emplace(address, PeerEntry(peer, TimeUtil::Now()));
+}
+
 void PeerManager::UnbanPeer(const IPAddress& address)
 {
     for (auto& entry : m_peersByAddress) {
         if (entry.second.m_peer->GetIPAddress() == address) {
             entry.second.m_peer->Unban();
+        }
+    }
+}
+
+void PeerManager::UnbanPeer(const SocketAddress& address)
+{
+    auto iter = m_peersByAddress.find(address);
+    if (iter != m_peersByAddress.end()) {
+        iter->second.m_peer->Unban();
+        return;
+    }
+
+    if (address.GetPortNumber() > 0) {
+        const SocketAddress addressWithoutPort(address.GetIPAddress(), 0);
+        auto peerWithoutPort = m_peersByAddress.find(addressWithoutPort);
+        if (peerWithoutPort != m_peersByAddress.end()) {
+            peerWithoutPort->second.m_peer->Unban();
         }
     }
 }

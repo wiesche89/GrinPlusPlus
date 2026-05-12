@@ -5,9 +5,10 @@
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/SocketAddress.h>
 #include <Net/Servers/RPC/RPCMethod.h>
+#include "NodeAPIUtils.h"
 #include <optional>
 #include <vector>
-#include <unordered_set>
+#include <set>
 #include <algorithm>
 #include <iterator>
 
@@ -34,7 +35,7 @@ public:
 
 		Json::Value json;
 
-		std::unordered_set<IPAddress> peersWanted;
+		std::set<SocketAddress> peersWanted;
 		for (const Json::Value& peerJson : values_json)
 		{
 			if (peerJson.isNull())
@@ -42,17 +43,13 @@ public:
 				continue;
 			}
 
-			std::optional<std::string> peerStr = JsonUtil::ConvertToStringOpt(peerJson);
-			if (peerStr.has_value())
+			try
 			{
-				try
-				{
-					peersWanted.insert(IPAddress::Parse(peerStr.value()));
-				}
-				catch (const std::exception&)
-				{
-					return request.BuildError("INVALID_PARAMS", "Invalid peer address");
-				}
+				peersWanted.insert(NodeAPI::ParseSocketAddrParam(peerJson));
+			}
+			catch (const std::exception&)
+			{
+				return request.BuildError("INVALID_PARAMS", "Invalid peer address");
 			}
 		}
 
@@ -74,7 +71,7 @@ public:
 		}
 		else
 		{
-			for (const IPAddress& peerWanted : peersWanted)
+			for (const SocketAddress& peerWanted : peersWanted)
 			{
 				if (auto peerOpt = m_pP2PServer->GetPeer(peerWanted); peerOpt.has_value())
 				{

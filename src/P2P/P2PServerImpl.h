@@ -30,9 +30,12 @@ public:
 	std::vector<PeerConstPtr> GetAllPeers() const final;
 	std::vector<ConnectedPeer> GetConnectedPeers() const final;
 	std::optional<PeerConstPtr> GetPeer(const IPAddress& address) const final;
+	std::optional<PeerConstPtr> GetPeer(const SocketAddress& address) const final;
 
 	void BanPeer(const IPAddress& address, const EBanReason banReason) final;
+	void BanPeer(const SocketAddress& address, const EBanReason banReason) final;
 	void UnbanPeer(const IPAddress& address) final;
+	void UnbanPeer(const SocketAddress& address) final;
 	bool UnbanAllPeers() final;
 
 	void BroadcastTransaction(const TransactionPtr& pTransaction) final;

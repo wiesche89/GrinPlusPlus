@@ -9,6 +9,7 @@
 #include <P2P/SyncStatus.h>
 #include <P2P/Peer.h>
 #include <P2P/ConnectedPeer.h>
+#include <Net/SocketAddress.h>
 #include <TxPool/TransactionPool.h>
 #include <Database/Database.h>
 #include <optional>
@@ -44,13 +45,26 @@ public:
 		const IPAddress& address
 	) const = 0;
 
+	virtual std::optional<PeerConstPtr> GetPeer(
+		const SocketAddress& address
+	) const = 0;
+
 	virtual void BanPeer(
 		const IPAddress& address,
 		const EBanReason banReason
 	) = 0;
 
+	virtual void BanPeer(
+		const SocketAddress& address,
+		const EBanReason banReason
+	) = 0;
+
 	virtual void UnbanPeer(
 		const IPAddress& address
+	) = 0;
+
+	virtual void UnbanPeer(
+		const SocketAddress& address
 	) = 0;
 
 	virtual bool UnbanAllPeers() = 0;

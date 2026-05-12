@@ -4,6 +4,8 @@
 #include <Net/Clients/RPC/RPC.h>
 #include <Net/Servers/RPC/RPCMethod.h>
 #include <API/Wallet/Owner/Models/Errors.h>
+#include "NodeAPIUtils.h"
+#include <algorithm>
 #include <optional>
 
 class GetUnspentOutputsHandler : public RPCMethod
@@ -21,51 +23,76 @@ public:
 			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "TxHashSet not available");
 		}
 
-		uint64_t startIndex = 1;
-		uint64_t max = 100;
-
-		const Json::Value params_json = request.GetParams().value();
-
-		auto startIndexParam = JsonUtil::GetUInt64Opt(params_json, "start_index");
-		auto maxParam = JsonUtil::GetUInt64Opt(params_json, "max");
-		if (startIndexParam.has_value())
+		if (!request.GetParams().has_value())
 		{
-			startIndex = startIndexParam.value();
+			return request.BuildError(RPC::Errors::PARAMS_MISSING);
 		}
-		if (maxParam.has_value())
+
+		const Json::Value& params = request.GetParams().value();
+		if (!params.isArray() || params.size() < 3 || params[0].isNull() || params[2].isNull())
 		{
-			max = maxParam.value();
+			return request.BuildError("INVALID_PARAMS", "Expected parameters: start_index, end_index, max, include_proof");
 		}
+
+		uint64_t startIndex = JsonUtil::ConvertToUInt64(params[0]);
+		std::optional<uint64_t> endIndex = std::nullopt;
+		if (params.size() > 1 && !params[1].isNull())
+		{
+			endIndex = JsonUtil::ConvertToUInt64(params[1]);
+		}
+		uint64_t max = JsonUtil::ConvertToUInt64(params[2]);
+		if (max > 10000)
+		{
+			max = 10000;
+		}
+		const bool includeProof = params.size() > 3 && !params[3].isNull() ? params[3].asBool() : false;
 
 		auto pBlockDB = m_pDatabase->GetBlockDB()->Read();
-		OutputRange range = tx->GetOutputsByLeafIndex(pBlockDB.GetShared(), startIndex, max);
+		const uint64_t highestIndex = endIndex.value_or(tx->GetOutputMMRSize());
+		const uint64_t lastIndex = highestIndex;
+		const uint64_t startPMMRIndex = startIndex > 0 ? startIndex - 1 : 0;
+		const uint64_t lastPMMRIndex = lastIndex > 0 ? lastIndex - 1 : 0;
 
-		Json::Value outputs;
-		for (const OutputDTO& info : range.GetOutputs())
+		Json::Value outputs(Json::arrayValue);
+		uint64_t lastRetrievedIndex = startIndex;
+		uint64_t count = 0;
+		if (startPMMRIndex <= lastPMMRIndex)
 		{
-			if (info.IsSpent())
+			const uint64_t chunkSize = 1000;
+			uint64_t chunkStart = startPMMRIndex;
+			while (chunkStart <= lastPMMRIndex && count < max)
 			{
-				continue;
+				const uint64_t chunkEnd = (std::min)(lastPMMRIndex, chunkStart + chunkSize - 1);
+				std::vector<OutputDTO> range = tx->GetOutputsByMMRIndex(pBlockDB.GetShared(), chunkStart, chunkEnd);
+				lastRetrievedIndex = chunkEnd + 1;
+
+				for (const OutputDTO& info : range)
+				{
+					if (count >= max)
+					{
+						break;
+					}
+
+					outputs.append(NodeAPI::BuildOutputPrintable(info, includeProof));
+					lastRetrievedIndex = info.GetMMRPosition() + 1;
+					++count;
+				}
+
+				if (chunkEnd == lastPMMRIndex)
+				{
+					break;
+				}
+				chunkStart = chunkEnd + 1;
 			}
-			Json::Value output;
-			output["output_type"] = OutputFeatures::ToString(info.GetIdentifier().GetFeatures());
-			output["commit"] = info.GetIdentifier().GetCommitment().ToHex();
-			output["spent"] = info.IsSpent();
-			output["proof"] = info.GetRangeProof().Format();
-
-			Serializer proofSerializer;
-			info.GetRangeProof().Serialize(proofSerializer);
-			output["proof_hash"] = Hasher::Blake2b(proofSerializer.GetBytes()).ToHex();
-
-			output["block_height"] = info.GetLocation().GetBlockHeight();
-			output["merkle_proof"] = Json::nullValue;
-			output["mmr_index"] = info.GetLeafIndex().GetPosition() + 1;
-
-			outputs.append(output);
 		}
 
+		Json::Value ok;
+		ok["highest_index"] = Json::UInt64(highestIndex);
+		ok["last_retrieved_index"] = Json::UInt64(lastRetrievedIndex);
+		ok["outputs"] = outputs;
+
 		Json::Value result;
-		result["Ok"] = outputs;
+		result["Ok"] = ok;
 
 		return request.BuildResult(result);
 	}

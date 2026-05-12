@@ -34,13 +34,13 @@ NodeServer::UPtr NodeServer::Create(const ServerPtr& pServer, const IBlockChain:
     RPCServer::Ptr pForeignServer = RPCServer::Create(pServer, "/v2/foreign", LoggerAPI::LogFile::NODE);
     pForeignServer->AddMethod("get_version", std::make_shared<GetVersionHandler>(pBlockChain));
     pForeignServer->AddMethod("get_header", std::make_shared<GetHeaderHandler>(pBlockChain));
-    pForeignServer->AddMethod("get_blocks", std::make_shared<GetBlocksHandler>(pBlockChain));
-    pForeignServer->AddMethod("get_block", std::make_shared<GetBlockHandler>(pBlockChain));
+    pForeignServer->AddMethod("get_blocks", std::make_shared<GetBlocksHandler>(pBlockChain, pDatabase));
+    pForeignServer->AddMethod("get_block", std::make_shared<GetBlockHandler>(pBlockChain, pDatabase));
     pForeignServer->AddMethod("get_tip", std::make_shared<GetTipHandler>(pBlockChain));
     pForeignServer->AddMethod("get_kernel", std::make_shared<GetKernelHandler>(pBlockChain));
-    pForeignServer->AddMethod("get_outputs", std::shared_ptr<RPCMethod>(new GetOutputsHandler(pTxHashSet, pDatabase)));
+    pForeignServer->AddMethod("get_outputs", std::shared_ptr<RPCMethod>(new GetOutputsHandler(pTxHashSet, pDatabase, pBlockChain)));
     pForeignServer->AddMethod("get_unspent_outputs", std::make_shared<GetUnspentOutputsHandler>(pTxHashSet, pDatabase));
-    pForeignServer->AddMethod("get_pmmr_indices", std::make_shared<GetPMMRIndicesHandler>(pTxHashSet, pDatabase));
+    pForeignServer->AddMethod("get_pmmr_indices", std::make_shared<GetPMMRIndicesHandler>(pTxHashSet, pDatabase, pBlockChain));
     pForeignServer->AddMethod("get_pool_size", std::make_shared<GetPoolSizeHandler>(pTransactionPool));
     pForeignServer->AddMethod("get_stempool_size", std::make_shared<GetStempoolSizeHandler>(pTransactionPool));
     pForeignServer->AddMethod("get_unconfirmed_transactions", std::make_shared<GetUnconfirmedTransactionsHandler>(pTransactionPool));
