@@ -11,8 +11,8 @@
 #include <P2P/SyncStatus.h>
 #include <algorithm>
 
-static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS = 3;
-static constexpr size_t PIHD_MAX_REQUESTS_PER_TICK = 3;
+static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS = 8;
+static constexpr size_t PIHD_MAX_REQUESTS_PER_TICK = 8;
 static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS_PER_PEER = 3;
 static constexpr std::chrono::seconds PIHD_HEADER_TIMEOUT(10);
 
