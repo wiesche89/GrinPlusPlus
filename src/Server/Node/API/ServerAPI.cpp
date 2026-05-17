@@ -56,7 +56,7 @@ int ServerAPI::GetStatus_Handler(struct mg_connection* conn, void* pNodeContext)
 {
 	NodeContext* pServer = (NodeContext*)pNodeContext;
 	
-	auto pTip = pServer->m_pBlockChain->GetTipBlockHeader(EChainType::CONFIRMED);
+	auto pTip = pServer->m_pBlockChain->GetCachedConfirmedTipBlockHeader();
 	if (pTip == nullptr)
 	{
 		return HTTPUtil::BuildInternalErrorResponse(conn, "Failed to find tip.");
@@ -101,7 +101,7 @@ int ServerAPI::GetStatus_Handler(struct mg_connection* conn, void* pNodeContext)
 	tipNode["total_difficulty"] = pTip->GetTotalDifficulty();
 	statusNode["chain"] = tipNode;
 
-	const uint64_t headerHeight = pServer->m_pBlockChain->GetHeight(EChainType::CANDIDATE);
+	const uint64_t headerHeight = pSyncStatus->GetHeaderHeight();
 	statusNode["header_height"] = headerHeight;
 
 	return HTTPUtil::BuildSuccessResponse(conn, statusNode.toStyledString());

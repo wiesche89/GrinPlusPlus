@@ -24,7 +24,7 @@ BlockChain::BlockChain(
 	std::shared_ptr<Locked<ChainState>> pChainState)
 	: m_pTransactionPool(pTransactionPool), m_pChainState(pChainState)
 {
-
+	RefreshCachedConfirmedTipBlockHeader();
 }
 
 BlockChain::~BlockChain()
@@ -113,6 +113,7 @@ std::shared_ptr<BlockChain> BlockChain::Create(
 void BlockChain::ResyncChain()
 {
 	ChainResyncer(m_pChainState).ResyncChain();
+	RefreshCachedConfirmedTipBlockHeader();
 }
 
 void BlockChain::UpdateSyncStatus(SyncStatus& syncStatus) const
@@ -132,7 +133,12 @@ uint64_t BlockChain::GetTotalDifficulty(const EChainType chainType) const
 
 EBlockChainStatus BlockChain::AddBlock(const FullBlock& block)
 {
-	return BlockProcessor(m_pChainState).ProcessBlock(block);
+	const EBlockChainStatus status = BlockProcessor(m_pChainState).ProcessBlock(block);
+	if (status == EBlockChainStatus::SUCCESS) {
+		RefreshCachedConfirmedTipBlockHeader();
+	}
+
+	return status;
 }
 
 EBlockChainStatus BlockChain::AddCompactBlock(const CompactBlock& compactBlock)
@@ -204,6 +210,7 @@ EBlockChainStatus BlockChain::ProcessTransactionHashSet(const Hash& blockHash, c
 		const bool success = TxHashSetProcessor(Global::GetConfig(), *this, m_pChainState).ProcessTxHashSet(blockHash, path, syncStatus);
 		if (success)
 		{
+			RefreshCachedConfirmedTipBlockHeader();
 			return EBlockChainStatus::SUCCESS;
 		}
 	}
@@ -276,6 +283,7 @@ EBlockChainStatus BlockChain::ProcessPIBDTransactionHashSet(const Hash& blockHas
 		}
 
 		stateBatch->Commit();
+		SetCachedConfirmedTipBlockHeader(pHeader);
 		return EBlockChainStatus::SUCCESS;
 	}
 	catch (const std::exception& e)
@@ -398,6 +406,27 @@ BlockHeaderPtr BlockChain::GetTipBlockHeader(const EChainType chainType) const
 	return m_pChainState->Read()->GetTipBlockHeader(chainType);
 }
 
+BlockHeaderPtr BlockChain::GetCachedConfirmedTipBlockHeader() const
+{
+	std::lock_guard<std::mutex> lock(m_confirmedTipMutex);
+	return m_pCachedConfirmedTip;
+}
+
+void BlockChain::RefreshCachedConfirmedTipBlockHeader()
+{
+	SetCachedConfirmedTipBlockHeader(GetTipBlockHeader(EChainType::CONFIRMED));
+}
+
+void BlockChain::SetCachedConfirmedTipBlockHeader(BlockHeaderPtr pHeader)
+{
+	if (pHeader == nullptr) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(m_confirmedTipMutex);
+	m_pCachedConfirmedTip = pHeader;
+}
+
 std::unique_ptr<CompactBlock> BlockChain::GetCompactBlockByHash(const Hash& hash) const
 {
 	std::unique_ptr<FullBlock> pBlock = m_pChainState->Read()->GetBlockByHash(hash);
@@ -490,7 +519,12 @@ bool BlockChain::ProcessNextOrphanBlock()
 
 	try
 	{
-		return BlockProcessor(m_pChainState).ProcessBlock(*pOrphanBlock) == EBlockChainStatus::SUCCESS;
+		const bool processed = BlockProcessor(m_pChainState).ProcessBlock(*pOrphanBlock) == EBlockChainStatus::SUCCESS;
+		if (processed) {
+			RefreshCachedConfirmedTipBlockHeader();
+		}
+
+		return processed;
 	}
 	catch (std::exception&)
 	{

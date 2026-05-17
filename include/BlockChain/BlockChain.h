@@ -93,6 +93,11 @@ public:
 	virtual BlockHeaderPtr GetTipBlockHeader(const EChainType chainType) const = 0;
 
 	//
+	// Returns the last cached confirmed chain tip without taking the chain state lock.
+	//
+	virtual BlockHeaderPtr GetCachedConfirmedTipBlockHeader() const = 0;
+
+	//
 	// Returns the block headers matching the given hashes.
 	//
 	virtual std::vector<BlockHeaderPtr> GetBlockHeadersByHash(const std::vector<Hash>& blockHeaderHashes) const = 0;

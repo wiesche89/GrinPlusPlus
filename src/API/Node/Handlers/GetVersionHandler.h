@@ -21,7 +21,7 @@ public:
 			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "BlockChain unavailable");
 		}
 
-		const BlockHeaderPtr pTip = m_pBlockChain->GetTipBlockHeader(EChainType::CONFIRMED);
+		const BlockHeaderPtr pTip = m_pBlockChain->GetCachedConfirmedTipBlockHeader();
 		if (pTip == nullptr)
 		{
 			return request.BuildError(RPC::ErrorCode::INTERNAL_ERROR, "Failed to retrieve chain tip");

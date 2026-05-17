@@ -21,7 +21,8 @@ public:
 		statusNode["user_agent"] = P2P::USER_AGENT;
 		statusNode["connections"] = m_pP2PServer->GetConnectedPeers().size();
 
-		auto pTip = m_pBlockChain->GetTipBlockHeader(EChainType::CONFIRMED);
+		SyncStatusConstPtr pSyncStatus = m_pP2PServer->GetSyncStatus();
+		auto pTip = m_pBlockChain->GetCachedConfirmedTipBlockHeader();
 
 		if (pTip == nullptr)
 		{
@@ -35,7 +36,6 @@ public:
 		tipNode["total_difficulty"] = pTip->GetTotalDifficulty();
 		statusNode["tip"] = tipNode;	
 
-		SyncStatusConstPtr pSyncStatus = m_pP2PServer->GetSyncStatus();
 		statusNode["sync_status"] = GetStatusString(*pSyncStatus);
 		
 		Json::Value syncInfo;
@@ -45,7 +45,7 @@ public:
 			case ESyncStatus::SYNCING_HEADERS:
 			{
 				syncInfo["highest_height"] = pSyncStatus->GetNetworkHeight();
-				syncInfo["current_height"] = m_pBlockChain->GetHeight(EChainType::CANDIDATE);
+				syncInfo["current_height"] = pSyncStatus->GetHeaderHeight();
 				syncInfo["header_sync_type"] = GetHeaderSyncTypeString(pSyncStatus->GetHeaderSyncType());
 				hasSyncInfo = true;
 				break;

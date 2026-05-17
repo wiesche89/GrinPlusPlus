@@ -52,6 +52,7 @@ public:
 	BlockHeaderPtr GetBlockHeaderByHash(const CBigInteger<32>& hash) const final;
 	BlockHeaderPtr GetBlockHeaderByCommitment(const Commitment& outputCommitment) const final;
 	BlockHeaderPtr GetTipBlockHeader(const EChainType chainType) const final;
+	BlockHeaderPtr GetCachedConfirmedTipBlockHeader() const final;
 	std::vector<BlockHeaderPtr> GetBlockHeadersByHash(const std::vector<CBigInteger<32>>& hashes) const final;
 
 	std::unique_ptr<CompactBlock> GetCompactBlockByHash(const Hash& hash) const final;
@@ -72,6 +73,11 @@ private:
 		std::shared_ptr<Locked<ChainState>> pChainState
 	);
 
+	void RefreshCachedConfirmedTipBlockHeader();
+	void SetCachedConfirmedTipBlockHeader(BlockHeaderPtr pHeader);
+
 	std::shared_ptr<ITransactionPool> m_pTransactionPool;
 	std::shared_ptr<Locked<ChainState>> m_pChainState;
+	mutable std::mutex m_confirmedTipMutex;
+	BlockHeaderPtr m_pCachedConfirmedTip;
 };
