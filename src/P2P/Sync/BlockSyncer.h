@@ -30,7 +30,7 @@ public:
 
 private:
 	bool IsBlockSyncDue(const SyncStatus& syncStatus);
-	bool RequestBlocks();
+	bool RequestBlocks(const bool allowRetries);
 	bool IsSlowPeer(PeerConstPtr pPeer) const { return m_slowPeers.find(pPeer->GetIPAddress()) != m_slowPeers.end(); }
 
 	std::weak_ptr<ConnectionManager> m_pConnectionManager;

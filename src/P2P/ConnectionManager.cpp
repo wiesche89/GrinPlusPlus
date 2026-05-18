@@ -99,7 +99,7 @@ std::vector<PeerPtr> ConnectionManager::GetMostWorkPeers() const
 	if (pMostWorkPeer != nullptr) {
 		const uint64_t totalDifficulty = pMostWorkPeer->GetTotalDifficulty();
 		for (const ConnectionPtr& pConnection : *connections) {
-			if (pConnection->GetTotalDifficulty() >= totalDifficulty && pConnection->GetHeight() > 0) {
+			if (pConnection->IsConnectionActive() && pConnection->GetTotalDifficulty() >= totalDifficulty && pConnection->GetHeight() > 0) {
 				mostWorkPeers.push_back(pConnection->GetPeer());
 			}
 		}

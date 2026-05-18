@@ -26,6 +26,7 @@ public:
 
 	bool AddBlockToProcess(PeerPtr pPeer, const FullBlock& block);
 	bool IsProcessingBlock(const Hash& hash) const;
+	size_t GetQueuedBlockCount() const noexcept { return m_blocksToProcess.size(); }
 
 private:
 	BlockPipe(const Config& config, const IBlockChain::Ptr& pBlockChain);

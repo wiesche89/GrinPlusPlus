@@ -36,9 +36,9 @@ public:
 	std::shared_ptr<TransactionPipe> GetTransactionPipe() { return m_pTransactionPipe; }
 	std::shared_ptr<TxHashSetPipe> GetTxHashSetPipe() { return m_pTxHashSetPipe; }
 
-	void ProcessBlock(Connection& connection, const FullBlock& block)
+	bool ProcessBlock(Connection& connection, const FullBlock& block)
 	{
-		m_pBlockPipe->AddBlockToProcess(connection.GetPeer(), block);
+		return m_pBlockPipe->AddBlockToProcess(connection.GetPeer(), block);
 	}
 
 	void ProcessTransaction(Connection& connection, const TransactionPtr& pTransaction, const EPoolType poolType)

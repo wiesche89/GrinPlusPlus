@@ -44,10 +44,20 @@
 #include <Common/Logger.h>
 #include <thread>
 #include <fstream>
+#include <chrono>
 
 static const int BUFFER_SIZE = 256 * 1024;
 
 using namespace MessageTypes;
+
+namespace
+{
+    static uint64_t ElapsedMillis(const std::chrono::steady_clock::time_point& start)
+    {
+        return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+    }
+}
 
 MessageProcessor::MessageProcessor(
     ConnectionManager& connectionManager,
@@ -352,15 +362,33 @@ void MessageProcessor::ProcessMessageInternal(const std::shared_ptr<Connection>&
         }
         case Block:
         {
+            const auto receiveStart = std::chrono::steady_clock::now();
             const BlockMessage blockMessage = BlockMessage::Deserialize(byteBuffer);
             const FullBlock& block = blockMessage.GetBlock();
 
-            LOG_TRACE_F("Block received: {}", block.GetHeight());
+            LOG_DEBUG_F(
+                "Received block message. height={}, peer={}, deserialize_ms={}",
+                block.GetHeight(),
+                pConnection->GetPeer(),
+                ElapsedMillis(receiveStart));
 
             if (m_pSyncStatus->GetStatus() == ESyncStatus::SYNCING_BLOCKS) {
-                m_pPipeline->ProcessBlock(*pConnection, block);
+                const bool queued = m_pPipeline->ProcessBlock(*pConnection, block);
+                LOG_DEBUG_F(
+                    "Queued body sync block. height={}, peer={}, queued={}, block_queue_size={}, elapsed_ms={}",
+                    block.GetHeight(),
+                    pConnection->GetPeer(),
+                    queued,
+                    m_pPipeline->GetBlockPipe()->GetQueuedBlockCount(),
+                    ElapsedMillis(receiveStart));
             } else {
+                const auto processStart = std::chrono::steady_clock::now();
                 const EBlockChainStatus added = m_pBlockChain->AddBlock(block);
+                LOG_DEBUG_F(
+                    "Processed live block. height={}, status={}, elapsed_ms={}",
+                    block.GetHeight(),
+                    (int)added,
+                    ElapsedMillis(processStart));
                 if (added == EBlockChainStatus::SUCCESS) {
                     const HeaderMessage headerMessage(block.GetHeader());
                     m_connectionManager.BroadcastMessage(headerMessage, pConnection->GetId());

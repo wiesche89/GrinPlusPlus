@@ -6,6 +6,15 @@
 #include <Common/Logger.h>
 #include <BlockChain/BlockChain.h>
 
+namespace
+{
+	static uint64_t ElapsedMillis(const std::chrono::steady_clock::time_point& start)
+	{
+		return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - start).count();
+	}
+}
+
 BlockPipe::BlockPipe(const Config& config, const IBlockChain::Ptr& pBlockChain)
 	: m_config(config), m_pBlockChain(pBlockChain), m_terminate(false)
 {
@@ -35,25 +44,15 @@ void BlockPipe::Thread_ProcessNewBlocks(BlockPipe& pipeline)
 
 	while (!pipeline.m_terminate && Global::IsRunning())
 	{
-		std::vector<BlockEntry> blocksToProcess = pipeline.m_blocksToProcess.copy_front(8); // TODO: Use number of CPU threads.
-		if (!blocksToProcess.empty())
+		std::function<bool(const BlockEntry&, const BlockEntry&)> comparator = [](const BlockEntry& lhs, const BlockEntry& rhs)
 		{
-			if (blocksToProcess.size() == 1)
-			{
-				ProcessNewBlock(pipeline, blocksToProcess.front());
-			}
-			else
-			{
-				std::vector<std::thread> tasks;
-				for (const BlockEntry& blockEntry : blocksToProcess)
-				{
-					tasks.push_back(std::thread([&pipeline, blockEntry] { ProcessNewBlock(pipeline, blockEntry); }));
-				}
+			return lhs.m_block.GetHeight() < rhs.m_block.GetHeight();
+		};
 
-				ThreadUtil::JoinAll(tasks);
-			}
-
-			pipeline.m_blocksToProcess.pop_front(blocksToProcess.size());
+		std::unique_ptr<BlockEntry> pBlockEntry = pipeline.m_blocksToProcess.pop_best(comparator);
+		if (pBlockEntry != nullptr)
+		{
+			ProcessNewBlock(pipeline, *pBlockEntry);
 		}
 		else
 		{
@@ -68,7 +67,13 @@ void BlockPipe::ProcessNewBlock(BlockPipe& pipeline, const BlockEntry& blockEntr
 {
 	try
 	{
+		const auto start = std::chrono::steady_clock::now();
 		const EBlockChainStatus status = pipeline.m_pBlockChain->AddBlock(blockEntry.m_block);
+		LOG_DEBUG_F(
+			"Processed body sync block. height={}, status={}, elapsed_ms={}",
+			blockEntry.m_block.GetHeight(),
+			(int)status,
+			ElapsedMillis(start));
 		if (status == EBlockChainStatus::INVALID)
 		{
 			blockEntry.m_peer->Ban(EBanReason::BadBlock);
@@ -99,6 +104,11 @@ void BlockPipe::Thread_PostProcessBlocks(BlockPipe& pipeline)
 
 bool BlockPipe::AddBlockToProcess(PeerPtr pPeer, const FullBlock& block)
 {
+	if (m_pBlockChain->HasBlock(block.GetHeight(), block.GetHash()) || m_pBlockChain->HasOrphan(block.GetHash()))
+	{
+		return false;
+	}
+
 	std::function<bool(const BlockEntry&, const BlockEntry&)> comparator = [](const BlockEntry& blockEntry1, const BlockEntry& blockEntry2)
 	{
 		return blockEntry1.m_block.GetHash() == blockEntry2.m_block.GetHash();

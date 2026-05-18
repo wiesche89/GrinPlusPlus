@@ -4,6 +4,8 @@
 #include <vector>
 #include <thread>
 #include <functional>
+#include <iterator>
+#include <memory>
 #include <shared_mutex>
 #include <condition_variable>
 
@@ -84,6 +86,29 @@ public:
 			m_deque.pop_front();
 			++itemsPopped;
 		}
+	}
+
+	std::unique_ptr<T> pop_best(std::function<bool(const T&, const T&)>& comparator)
+	{
+		std::unique_lock<std::shared_mutex> writeLock(m_mutex);
+
+		if (m_deque.empty())
+		{
+			return nullptr;
+		}
+
+		auto bestIter = m_deque.begin();
+		for (auto iter = std::next(m_deque.begin()); iter != m_deque.end(); iter++)
+		{
+			if (comparator(*iter, *bestIter))
+			{
+				bestIter = iter;
+			}
+		}
+
+		std::unique_ptr<T> item = std::make_unique<T>(*bestIter);
+		m_deque.erase(bestIter);
+		return item;
 	}
 
 	//T pop()
