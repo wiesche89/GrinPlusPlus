@@ -9,6 +9,7 @@
 #pragma warning(pop)
 
 #include <Core/Traits/Batchable.h>
+#include <Core/Exceptions/FileException.h>
 #include <Roaring.h>
 #include <Common/Util/BitUtil.h>
 #include <Common/Util/FileUtil.h>

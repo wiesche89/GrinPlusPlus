@@ -529,28 +529,7 @@ Hash TxHashSet::GetOutputRoot(const uint64_t outputMMRSize) const
 
 Hash TxHashSet::GetOutputBitmapRoot(const uint64_t numOutputs) const
 {
-	std::lock_guard<std::mutex> lock(m_outputBitmapCacheMutex);
-	const uint64_t outputLeaves = MMRUtil::CountLeaves(m_pOutputPMMR->GetSize());
-	if (numOutputs == outputLeaves) {
-		BuildOutputBitmapCache();
-		return m_outputBitmapCache->Root();
-	}
-
-	BitmapAccumulator accumulator;
-	const uint64_t chunkCount = (numOutputs + BitmapChunk::LEN_BITS - 1) / BitmapChunk::LEN_BITS;
-	for (uint64_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
-		BitmapChunk chunk;
-		const uint64_t firstLeaf = chunkIdx * BitmapChunk::LEN_BITS;
-		const uint64_t lastLeaf = (std::min)(numOutputs, firstLeaf + BitmapChunk::LEN_BITS);
-		for (uint64_t leafIdx = firstLeaf; leafIdx < lastLeaf; ++leafIdx) {
-			if (m_pOutputPMMR->IsUnpruned(LeafIndex::At(leafIdx))) {
-				chunk.Set(leafIdx - firstLeaf, true);
-			}
-		}
-		accumulator.AppendChunk(std::move(chunk));
-	}
-
-	return accumulator.Root();
+	return m_pOutputPMMR->UBMTRoot(numOutputs);
 }
 
 BitmapAccumulator TxHashSet::GetOutputBitmapAccumulator() const

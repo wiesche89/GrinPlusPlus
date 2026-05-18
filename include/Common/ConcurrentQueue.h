@@ -111,6 +111,34 @@ public:
 		return item;
 	}
 
+	std::unique_ptr<T> pop_best_if(std::function<bool(const T&)>& predicate, std::function<bool(const T&, const T&)>& comparator)
+	{
+		std::unique_lock<std::shared_mutex> writeLock(m_mutex);
+
+		auto bestIter = m_deque.end();
+		for (auto iter = m_deque.begin(); iter != m_deque.end(); iter++)
+		{
+			if (!predicate(*iter))
+			{
+				continue;
+			}
+
+			if (bestIter == m_deque.end() || comparator(*iter, *bestIter))
+			{
+				bestIter = iter;
+			}
+		}
+
+		if (bestIter == m_deque.end())
+		{
+			return nullptr;
+		}
+
+		std::unique_ptr<T> item = std::make_unique<T>(*bestIter);
+		m_deque.erase(bestIter);
+		return item;
+	}
+
 	//T pop()
 	//{
 	//	std::unique_lock<std::shared_mutex> writeLock(m_mutex);

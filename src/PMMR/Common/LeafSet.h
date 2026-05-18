@@ -1,8 +1,8 @@
 #pragma once
 
 #include "PruneList.h"
-#include "MMRHashUtil.h"
 
+#include <PMMR/Common/BitmapAccumulator.h>
 #include <string>
 #include <Crypto/Models/Hash.h>
 #include <Roaring.h>
@@ -56,24 +56,21 @@ public:
 
 	Hash Root(const uint64_t numOutputs) const
 	{
-		const fs::path path = fs::temp_directory_path() / "UBMT";
-		std::shared_ptr<HashFile> pHashFile = HashFile::Load(path);
-		pHashFile->Rewind(0);
-
+		BitmapAccumulator accumulator;
 		size_t index = 0;
-		std::vector<uint8_t> bytes(128);
 		const uint64_t numChunks = (numOutputs + 1023) / 1024;
 		for (size_t i = 0; i < numChunks; i++)
 		{
-			for (size_t j = 0; j < 128; j++)
+			std::array<uint8_t, BitmapChunk::LEN_BYTES> bytes{};
+			for (size_t j = 0; j < BitmapChunk::LEN_BYTES; j++)
 			{
 				bytes[j] = m_pBitmap->GetByte(index++);
 			}
 
-			MMRHashUtil::AddHashes(pHashFile, bytes, nullptr);
+			accumulator.AppendChunk(BitmapChunk(std::move(bytes)));
 		}
 
-		return MMRHashUtil::Root(pHashFile, pHashFile->GetSize(), nullptr);
+		return accumulator.Root();
 	}
 
 private:

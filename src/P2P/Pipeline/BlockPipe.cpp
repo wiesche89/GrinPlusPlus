@@ -49,7 +49,13 @@ void BlockPipe::Thread_ProcessNewBlocks(BlockPipe& pipeline)
 			return lhs.m_block.GetHeight() < rhs.m_block.GetHeight();
 		};
 
-		std::unique_ptr<BlockEntry> pBlockEntry = pipeline.m_blocksToProcess.pop_best(comparator);
+		const uint64_t nextHeight = pipeline.m_pBlockChain->GetHeight(EChainType::CONFIRMED) + 1;
+		std::function<bool(const BlockEntry&)> predicate = [nextHeight](const BlockEntry& entry)
+		{
+			return entry.m_block.GetHeight() <= nextHeight;
+		};
+
+		std::unique_ptr<BlockEntry> pBlockEntry = pipeline.m_blocksToProcess.pop_best_if(predicate, comparator);
 		if (pBlockEntry != nullptr)
 		{
 			ProcessNewBlock(pipeline, *pBlockEntry);
