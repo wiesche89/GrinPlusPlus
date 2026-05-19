@@ -15,6 +15,7 @@ static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS = 8;
 static constexpr size_t PIHD_MAX_REQUESTS_PER_TICK = 8;
 static constexpr size_t PIHD_MAX_IN_FLIGHT_SEGMENTS_PER_PEER = 3;
 static constexpr std::chrono::seconds PIHD_HEADER_TIMEOUT(10);
+static constexpr std::chrono::seconds PIHD_STALL_RECOVERY_TIMEOUT(30);
 
 static bool CanUsePIHD(const ConnectedPeer& peer, const uint64_t mostWork)
 {
@@ -56,7 +57,7 @@ bool HeaderSyncer::SyncHeaders(SyncStatus& syncStatus, const bool startup)
 	return false;
 }
 
-bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
+bool HeaderSyncer::IsHeaderSyncDue(SyncStatus& syncStatus)
 {
 	if (m_pendingRequests.empty())
 	{
@@ -71,6 +72,11 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 	}
 
 	const auto now = std::chrono::system_clock::now();
+	if (height != m_lastProgressHeight) {
+		m_lastProgressHeight = height;
+		m_lastProgressTime = now;
+	}
+
 	const size_t previousPendingCount = m_pendingRequests.size();
 	bool removedPendingRequest = false;
 	m_pendingRequests.erase(
@@ -111,6 +117,24 @@ bool HeaderSyncer::IsHeaderSyncDue(const SyncStatus& syncStatus)
 		m_pendingRequests.cend(),
 		[](const PendingHeaderRequest& request) { return !IsPIHDIdentifier(request.identifier); });
 	size_t pihdPendingCount = m_pendingRequests.size() - legacyPendingCount;
+
+	if (pihdPendingCount > 0 && height == m_lastProgressHeight && (now - m_lastProgressTime) >= PIHD_STALL_RECOVERY_TIMEOUT) {
+		LOG_WARNING_F(
+			"PIHD header sync stalled at height {} for {}s with {} pending PIHD request(s); clearing pending requests and cached header batches.",
+			height,
+			std::chrono::duration_cast<std::chrono::seconds>(now - m_lastProgressTime).count(),
+			pihdPendingCount);
+		m_pendingRequests.erase(
+			std::remove_if(
+				m_pendingRequests.begin(),
+				m_pendingRequests.end(),
+				[](const PendingHeaderRequest& request) { return IsPIHDIdentifier(request.identifier); }),
+			m_pendingRequests.end());
+		HeaderBatchCache::Get().Clear();
+		syncStatus.UpdateHeaderSyncType(EHeaderSyncType::UNKNOWN);
+		m_lastProgressTime = now;
+		return true;
+	}
 
 	if (pihdPeerCount == 0) {
 		if (pihdPendingCount > 0) {

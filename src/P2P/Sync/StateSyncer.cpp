@@ -11,6 +11,7 @@
 #include <algorithm>
 
 static constexpr std::chrono::minutes PIBD_STALLED_PEER_BACKOFF(10);
+static constexpr size_t PIBD_STALL_CYCLES_WITHOUT_ALTERNATIVE_BEFORE_ABORT = 2;
 
 static uint64_t GetPIBDMinPeerHeight(const uint64_t, const uint64_t archiveHeight)
 {
@@ -199,6 +200,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 				|| currentLeaves > m_lastPIBDProgressLeaves) {
 				m_lastPIBDProgressLeaves = currentLeaves;
 				m_lastPIBDProgressTime = std::chrono::steady_clock::now();
+				m_pibdStallCyclesWithoutAlternative = 0;
 				m_pibdNoPeerSinceSet = false;
 			} else {
 				const auto stallSecs = std::chrono::duration_cast<std::chrono::seconds>(
@@ -221,11 +223,32 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 					}
 
 					if (hasAlternativePIBDPeer) {
+						m_pibdStallCyclesWithoutAlternative = 0;
 						m_blockedPIBDPeers[SocketAddress(m_pPeer->GetIPAddress(), m_pPeer->GetPort()).Format()] = std::chrono::steady_clock::now() + PIBD_STALLED_PEER_BACKOFF;
 						m_pPipeline->ClearPIBDRequests();
 						m_pPeer = nullptr;
 					} else {
-						LOG_WARNING(StringUtil::Format("PIBD peer {} stalled, but no alternative PIBD peer is available; continuing retries.", m_pPeer));
+						++m_pibdStallCyclesWithoutAlternative;
+						if (m_pibdStallCyclesWithoutAlternative >= PIBD_STALL_CYCLES_WITHOUT_ALTERNATIVE_BEFORE_ABORT) {
+							LOG_WARNING(StringUtil::Format(
+								"PIBD peer {} stalled for {} consecutive cycle(s) with no alternative PIBD peer; aborting PIBD to allow fallback sync.",
+								m_pPeer,
+								m_pibdStallCyclesWithoutAlternative));
+							m_blockedPIBDPeers[SocketAddress(m_pPeer->GetIPAddress(), m_pPeer->GetPort()).Format()] = std::chrono::steady_clock::now() + PIBD_STALLED_PEER_BACKOFF;
+							m_pPipeline->AbortPIBD();
+							m_pPeer = nullptr;
+							m_requestedHeight = 0;
+							m_lastPIBDProgressLeaves = std::numeric_limits<uint64_t>::max();
+							m_pibdStallCyclesWithoutAlternative = 0;
+							syncStatus.UpdateStatus(ESyncStatus::TXHASHSET_SYNC_FAILED);
+							return false;
+						}
+
+						LOG_WARNING(StringUtil::Format(
+							"PIBD peer {} stalled, but no alternative PIBD peer is available; continuing retries ({}/{} stall cycles before fallback).",
+							m_pPeer,
+							m_pibdStallCyclesWithoutAlternative,
+							PIBD_STALL_CYCLES_WITHOUT_ALTERNATIVE_BEFORE_ABORT));
 						m_lastPIBDProgressTime = std::chrono::steady_clock::now();
 					}
 				}
@@ -403,6 +426,7 @@ bool StateSyncer::RequestPIBDState(SyncStatus& syncStatus)
 	m_requestedHeight = requestedHeight;
 	m_lastPIBDProgressLeaves = syncStatus.GetPIBDCompletedLeaves();
 	m_lastPIBDProgressTime = std::chrono::steady_clock::now();
+	m_pibdStallCyclesWithoutAlternative = 0;
 
 	// Build peer list: primary first, then any additional eligible peers
 	std::vector<PeerConstPtr> pibdPeerList;

@@ -34,6 +34,7 @@ public:
 		m_pibdFirstEligibleSinceSet = false;
 		m_lastLoggedPIBDPeerCount = 0;
 		m_lastLoggedPIBDPeerLimit = 0;
+		m_pibdStallCyclesWithoutAlternative = 0;
 	}
 
 	bool SyncState(SyncStatus& syncStatus);
@@ -56,6 +57,7 @@ private:
 	bool m_pibdFirstEligibleSinceSet;
 	size_t m_lastLoggedPIBDPeerCount;
 	size_t m_lastLoggedPIBDPeerLimit;
+	size_t m_pibdStallCyclesWithoutAlternative;
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_blockedPIBDPeers;
 
 	std::weak_ptr<ConnectionManager> m_pConnectionManager;

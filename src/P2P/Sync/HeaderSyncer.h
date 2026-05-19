@@ -17,6 +17,8 @@ public:
 		: m_pConnectionManager(pConnectionManager), m_pBlockChain(pBlockChain)
 	{
 		m_lastHeight = 0;
+		m_lastProgressHeight = 0;
+		m_lastProgressTime = std::chrono::system_clock::now();
 	}
 
 	bool SyncHeaders(SyncStatus& syncStatus, const bool startup);
@@ -29,12 +31,14 @@ private:
 		std::chrono::time_point<std::chrono::system_clock> timeout;
 	};
 
-	bool IsHeaderSyncDue(const SyncStatus& syncStatus);
+	bool IsHeaderSyncDue(SyncStatus& syncStatus);
 	bool RequestHeaders(SyncStatus& syncStatus);
 
 	std::weak_ptr<ConnectionManager> m_pConnectionManager;
 	IBlockChain::Ptr m_pBlockChain;
 
 	uint64_t m_lastHeight;
+	uint64_t m_lastProgressHeight;
+	std::chrono::time_point<std::chrono::system_clock> m_lastProgressTime;
 	std::vector<PendingHeaderRequest> m_pendingRequests;
 };

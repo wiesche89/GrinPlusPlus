@@ -22,7 +22,7 @@ namespace PIBD
 
 	static constexpr uint16_t SEGMENT_REQUEST_TIMEOUT_SECS = 60;
 	static constexpr uint16_t BLOCKING_SEGMENT_RETRY_SECS = 10;
-	static constexpr uint8_t BLOCKING_SEGMENT_RETRY_COUNT = 0;
+	static constexpr uint8_t BLOCKING_SEGMENT_RETRY_COUNT = 1;
 	static constexpr uint16_t BITMAP_BLOCKING_SEGMENT_HEDGE_SECS = 4;
 	static constexpr uint16_t BLOCKING_SEGMENT_HEDGE_SECS = 20;
 	static constexpr uint8_t BLOCKING_SEGMENT_HEDGE_COUNT = 2;
